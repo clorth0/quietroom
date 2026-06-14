@@ -46,7 +46,11 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
         if session is None:
             emit("error", {"message": "no device"})
             return
-        cycles = int((data or {}).get("cycles", 5))
+        try:
+            cycles = int((data or {}).get("cycles", 5))
+        except (TypeError, ValueError):
+            emit("error", {"message": "invalid cycles"})
+            return
         count = session.capture_baseline(cycles=max(1, min(cycles, 30)))
         emit("baseline_ready", {"sweep_count": count})
 

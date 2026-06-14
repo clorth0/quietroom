@@ -30,3 +30,17 @@ def test_investigate_out_of_range_emits_error():
     client.emit("investigate", {"freq_hz": 99_000_000_000})  # above 6 GHz
     errors = [e for e in client.get_received() if e["name"] == "error"]
     assert errors
+
+
+def test_investigate_non_numeric_freq_emits_error():
+    app, socketio, client = _client()
+    client.emit("investigate", {"freq_hz": "not-a-number"})
+    errors = [e for e in client.get_received() if e["name"] == "error"]
+    assert errors
+
+
+def test_capture_baseline_bad_cycles_emits_error():
+    app, socketio, client = _client()
+    client.emit("capture_baseline", {"cycles": "five"})
+    errors = [e for e in client.get_received() if e["name"] == "error"]
+    assert errors
