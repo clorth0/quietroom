@@ -10,8 +10,9 @@ intended use.
 
 ## Status
 
-Early development. The design is specified in
-[`docs/superpowers/specs/2026-06-14-quietroom-design.md`](docs/superpowers/specs/2026-06-14-quietroom-design.md).
+Early development. The detection engine (baseline differencing, four-detector
+scoring, ranked findings) is implemented and tested. The radio, audio, and web
+layers are next.
 
 ## How it works
 

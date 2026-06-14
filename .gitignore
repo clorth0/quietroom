@@ -18,3 +18,5 @@ baselines/
 /store/
 .idea/
 .vscode/
+# Local planning/workflow artifacts; not part of the tool
+docs/superpowers/
