@@ -31,4 +31,43 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
     def index():
         return render_template("index.html")
 
+    from flask_socketio import emit
+
+    MIN_HZ, MAX_HZ = 1_000_000, 6_000_000_000
+
+    def _audio_kwargs():
+        # In demo mode, synthesize a positive correlation (no mic/speaker/radio).
+        if app.config["DEMO"]:
+            return {"audio_test": lambda *a, **k: 0.85}
+        return {}
+
+    @socketio.on("capture_baseline")
+    def _on_capture_baseline(data):
+        if session is None:
+            emit("error", {"message": "no device"})
+            return
+        cycles = int((data or {}).get("cycles", 5))
+        count = session.capture_baseline(cycles=max(1, min(cycles, 30)))
+        emit("baseline_ready", {"sweep_count": count})
+
+    @socketio.on("investigate")
+    def _on_investigate(data):
+        if session is None:
+            emit("error", {"message": "no device"})
+            return
+        try:
+            freq_hz = float((data or {}).get("freq_hz"))
+        except (TypeError, ValueError):
+            emit("error", {"message": "invalid frequency"})
+            return
+        if not (MIN_HZ <= freq_hz <= MAX_HZ):
+            emit("error", {"message": "frequency out of range"})
+            return
+        try:
+            payload = session.investigate(freq_hz, **_audio_kwargs())
+        except KeyError:
+            emit("error", {"message": "no current suspect at that frequency"})
+            return
+        emit("finding", payload)
+
     return app, socketio
