@@ -19,3 +19,13 @@ def resample_to(x: np.ndarray, num: int) -> np.ndarray:
     if num <= 0:
         return np.zeros(0, dtype=float)
     return resample(np.asarray(x, dtype=float), num)
+
+
+def iq_to_am_envelope(iq: np.ndarray, in_fs: int, out_fs: int) -> np.ndarray:
+    """Amplitude (AM) envelope of an IQ stream, DC-blocked and resampled to out_fs."""
+    mag = np.abs(np.asarray(iq))
+    if len(mag) == 0:
+        return np.zeros(0, dtype=float)
+    mag = mag - mag.mean()                       # drop the carrier/DC level
+    n_out = max(int(len(mag) * out_fs / in_fs), 1)
+    return resample_to(mag, n_out)
