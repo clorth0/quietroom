@@ -162,10 +162,12 @@ class HackRFDevice(Device):
         if proc.stdout is None:  # pragma: no cover - defensive
             raise DeviceError("hackrf_transfer produced no stdout")
         want_bytes = n_samples * 2
-        raw = proc.stdout.read(want_bytes)
-        proc.terminate()
         try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            raw = proc.stdout.read(want_bytes)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         return iq_cs8_to_complex(raw)
