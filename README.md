@@ -1,5 +1,8 @@
 # Quietroom
 
+[![CI](https://github.com/clorth0/quietroom/actions/workflows/ci.yml/badge.svg)](https://github.com/clorth0/quietroom/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/clorth0/quietroom)](LICENSE)
+
 Receive-only RF bug-sweep tool. Quietroom drives a HackRF One to hunt for hidden
 transmitters in a space by finding emitters that do not belong, then ranks them
 by how suspicious they are and tells you why in plain language.
