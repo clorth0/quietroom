@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.python-version
+.uv/
+*.egg-info/
+.DS_Store
+# Raw RF / audio captures and saved baselines
+*.iq
+*.cu8
+*.wav
+*.sigmf-data
+*.sigmf-meta
+captures/
+/captures/
+baselines/
+/store/
+.idea/
+.vscode/
