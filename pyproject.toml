@@ -7,6 +7,9 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.11",
     "sounddevice>=0.4",
+    "flask>=3.0",
+    "flask-socketio>=5.4",
+    "simple-websocket>=1.0",
 ]
 
 [project.optional-dependencies]
