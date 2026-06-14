@@ -17,6 +17,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 quietroom = "quietroom.cli:main"
+quietroom-web = "quietroom.web.app:main"
 
 [build-system]
 requires = ["hatchling"]

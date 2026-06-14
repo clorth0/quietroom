@@ -1,6 +1,8 @@
 """Flask + Socket.IO transport for Quietroom (localhost-only)."""
 from __future__ import annotations
 
+import argparse
+
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 
@@ -99,3 +101,23 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
         app.config["RUNNING"] = False
 
     return app, socketio
+
+
+def build_server(demo: bool = False, host: str = "127.0.0.1", port: int = 8770):
+    app, socketio = create_app(demo=demo)
+    app.config["HOST"] = host
+    app.config["PORT"] = port
+    return app, socketio
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="quietroom-web",
+                                     description="Quietroom localhost web UI.")
+    parser.add_argument("--demo", action="store_true", help="run with no hardware")
+    parser.add_argument("--host", default="127.0.0.1", help="bind host (keep localhost)")
+    parser.add_argument("--port", type=int, default=8770)
+    args = parser.parse_args(argv)
+    app, socketio = build_server(demo=args.demo, host=args.host, port=args.port)
+    print(f"Quietroom web UI on http://{args.host}:{args.port}  (demo={args.demo})")
+    socketio.run(app, host=args.host, port=args.port, allow_unsafe_werkzeug=True)
+    return 0
