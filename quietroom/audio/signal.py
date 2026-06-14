@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import resample
+from scipy.signal import correlate, resample
 
 
 def make_chirp(duration_s: float, fs: int, f0: float = 500.0, f1: float = 3000.0) -> np.ndarray:
@@ -42,3 +42,23 @@ def iq_to_fm_envelope(iq: np.ndarray, in_fs: int, out_fs: int) -> np.ndarray:
     # shorter) so AM and FM envelopes of the same capture come out equal-length.
     n_out = max(int(len(x) * out_fs / in_fs), 1)
     return resample_to(disc, n_out)
+
+
+def best_lag_correlation(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
+    """Peak normalized cross-correlation (0..1) of a and b over lags in +/-max_lag."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    a = a[:n] - a[:n].mean()
+    b = b[:n] - b[:n].mean()
+    denom = np.sqrt(np.sum(a * a) * np.sum(b * b))
+    if denom == 0:
+        return 0.0
+    corr = correlate(a, b, mode="full")          # length 2n-1; zero lag at index n-1
+    mid = n - 1
+    lo = max(0, mid - max_lag)
+    hi = min(len(corr), mid + max_lag + 1)
+    peak = float(np.max(np.abs(corr[lo:hi])))
+    return peak / denom
