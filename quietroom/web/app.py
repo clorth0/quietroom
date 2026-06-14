@@ -10,6 +10,13 @@ from quietroom.web.session import ScanSession
 _CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 
 
+def emit_tick(session, emit_fn) -> None:
+    """Run one sweep and emit its spectrum + findings via emit_fn(name, payload)."""
+    spectrum, findings = session.sweep_once()
+    emit_fn("sweep", spectrum)
+    emit_fn("findings", {"findings": findings})
+
+
 def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
     app = Flask(__name__)
     socketio = SocketIO(app, async_mode="threading", cors_allowed_origins=[])
@@ -18,6 +25,7 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
         device = streaming_demo_device() if demo else None
     session = ScanSession(device) if device is not None else None
     app.config["DEMO"] = demo
+    app.config["RUNNING"] = False
     app.scan_session = session            # exposed for tests and handlers
 
     @app.after_request
@@ -73,5 +81,21 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
             emit("error", {"message": "no current suspect at that frequency"})
             return
         emit("finding", payload)
+
+    def _sweep_loop():
+        while app.config["RUNNING"]:
+            emit_tick(session, socketio.emit)
+            socketio.sleep(0.5)
+
+    @socketio.on("start")
+    def _on_start(data):
+        if session is None or app.config["RUNNING"]:
+            return
+        app.config["RUNNING"] = True
+        socketio.start_background_task(_sweep_loop)
+
+    @socketio.on("stop")
+    def _on_stop(data):
+        app.config["RUNNING"] = False
 
     return app, socketio
