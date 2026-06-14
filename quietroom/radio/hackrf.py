@@ -26,6 +26,11 @@ MAX_HZ = 6_000_000_000
 DEFAULT_LNA = 16
 DEFAULT_VGA = 20
 IQ_BASEBAND_HZ = 1_750_000
+# HackRF gain ranges: LNA (IF) 0-40 dB in 8 dB steps, VGA (baseband) 0-62 dB in 2 dB steps.
+LNA_MAX_DB = 40
+LNA_STEP_DB = 8
+VGA_MAX_DB = 62
+VGA_STEP_DB = 2
 
 
 def _check_range(f_start_hz: int, f_stop_hz: int) -> None:
@@ -33,6 +38,17 @@ def _check_range(f_start_hz: int, f_stop_hz: int) -> None:
         raise ValueError(
             f"frequency range {f_start_hz}-{f_stop_hz} Hz outside "
             f"{MIN_HZ}-{MAX_HZ} Hz"
+        )
+
+
+def _check_gain(lna_gain: int, vga_gain: int) -> None:
+    if not (0 <= lna_gain <= LNA_MAX_DB and lna_gain % LNA_STEP_DB == 0):
+        raise ValueError(
+            f"LNA gain {lna_gain} must be 0-{LNA_MAX_DB} dB in steps of {LNA_STEP_DB}"
+        )
+    if not (0 <= vga_gain <= VGA_MAX_DB and vga_gain % VGA_STEP_DB == 0):
+        raise ValueError(
+            f"VGA gain {vga_gain} must be 0-{VGA_MAX_DB} dB in steps of {VGA_STEP_DB}"
         )
 
 
@@ -45,6 +61,7 @@ def build_sweep_cmd(
     amp: bool = False,
 ) -> list[str]:
     _check_range(f_start_hz, f_stop_hz)
+    _check_gain(lna_gain, vga_gain)
     cmd = [
         HACKRF_SWEEP,
         "-f", f"{f_start_hz // 1_000_000}:{f_stop_hz // 1_000_000}",
@@ -67,6 +84,7 @@ def build_iq_cmd(
 ) -> list[str]:
     if not (MIN_HZ <= center_hz <= MAX_HZ):
         raise ValueError(f"center {center_hz} Hz outside {MIN_HZ}-{MAX_HZ} Hz")
+    _check_gain(lna_gain, vga_gain)
     cmd = [
         HACKRF_TRANSFER,
         "-r", "-",
