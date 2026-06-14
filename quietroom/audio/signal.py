@@ -29,3 +29,16 @@ def iq_to_am_envelope(iq: np.ndarray, in_fs: int, out_fs: int) -> np.ndarray:
     mag = mag - mag.mean()                       # drop the carrier/DC level
     n_out = max(int(len(mag) * out_fs / in_fs), 1)
     return resample_to(mag, n_out)
+
+
+def iq_to_fm_envelope(iq: np.ndarray, in_fs: int, out_fs: int) -> np.ndarray:
+    """FM (phase-discriminator) envelope of an IQ stream, resampled to out_fs."""
+    x = np.asarray(iq)
+    if len(x) < 2:
+        return np.zeros(0, dtype=float)
+    disc = np.angle(x[1:] * np.conj(x[:-1]))     # instantaneous frequency
+    disc = disc - disc.mean()
+    # Size the output from the original IQ length (not len(disc), which is one
+    # shorter) so AM and FM envelopes of the same capture come out equal-length.
+    n_out = max(int(len(x) * out_fs / in_fs), 1)
+    return resample_to(disc, n_out)
