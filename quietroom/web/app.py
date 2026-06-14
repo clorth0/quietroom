@@ -24,7 +24,12 @@ def create_app(device=None, demo: bool = False) -> tuple[Flask, SocketIO]:
     socketio = SocketIO(app, async_mode="threading", cors_allowed_origins=[])
 
     if device is None:
-        device = streaming_demo_device() if demo else None
+        if demo:
+            device = streaming_demo_device()
+        else:
+            from quietroom.radio.hackrf import HackRFDevice
+
+            device = HackRFDevice()
     session = ScanSession(device) if device is not None else None
     app.config["DEMO"] = demo
     app.config["RUNNING"] = False
