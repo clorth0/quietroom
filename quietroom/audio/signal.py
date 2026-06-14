@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy.signal import resample
 
 
 def make_chirp(duration_s: float, fs: int, f0: float = 500.0, f1: float = 3000.0) -> np.ndarray:
@@ -11,3 +12,10 @@ def make_chirp(duration_s: float, fs: int, f0: float = 500.0, f1: float = 3000.0
     k = (f1 - f0) / duration_s if duration_s > 0 else 0.0
     phase = 2 * np.pi * (f0 * t + 0.5 * k * t * t)
     return np.sin(phase).astype(np.float32)
+
+
+def resample_to(x: np.ndarray, num: int) -> np.ndarray:
+    """Resample x to exactly `num` samples (FFT-based). num<=0 -> empty array."""
+    if num <= 0:
+        return np.zeros(0, dtype=float)
+    return resample(np.asarray(x, dtype=float), num)
