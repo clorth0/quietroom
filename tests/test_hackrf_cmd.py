@@ -49,3 +49,26 @@ def test_parse_probe_output_present():
 
 def test_parse_probe_output_absent():
     assert hackrf.parse_probe_output("No HackRF boards found.") is None
+
+
+def test_valid_gain_edges_accepted():
+    # LNA 0-40 step 8, VGA 0-62 step 2: the extreme valid values must pass.
+    hackrf.build_sweep_cmd(100_000_000, 200_000_000, 1_000_000, lna_gain=0, vga_gain=0)
+    hackrf.build_sweep_cmd(100_000_000, 200_000_000, 1_000_000, lna_gain=40, vga_gain=62)
+    hackrf.build_iq_cmd(101_100_000, 2_000_000, 200_000, lna_gain=8, vga_gain=2)
+
+
+@pytest.mark.parametrize("lna", [-8, 7, 17, 48])
+def test_invalid_lna_gain_rejected(lna):
+    with pytest.raises(ValueError):
+        hackrf.build_sweep_cmd(100_000_000, 200_000_000, 1_000_000, lna_gain=lna)
+    with pytest.raises(ValueError):
+        hackrf.build_iq_cmd(101_100_000, 2_000_000, 200_000, lna_gain=lna)
+
+
+@pytest.mark.parametrize("vga", [-2, 3, 63, 64])
+def test_invalid_vga_gain_rejected(vga):
+    with pytest.raises(ValueError):
+        hackrf.build_sweep_cmd(100_000_000, 200_000_000, 1_000_000, vga_gain=vga)
+    with pytest.raises(ValueError):
+        hackrf.build_iq_cmd(101_100_000, 2_000_000, 200_000, vga_gain=vga)
