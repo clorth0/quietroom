@@ -46,6 +46,17 @@ HackRF One (1 MHz to 6 GHz). A wideband antenna and, optionally, a bias-tee LNA
 improve sensitivity. The device layer is pluggable so other SDRs can be added
 later.
 
+## Web UI
+
+A localhost browser interface (live waterfall, ranked suspect table, on-demand
+audio investigate):
+
+    uv run quietroom-web            # live HackRF
+    uv run quietroom-web --demo     # no hardware
+
+Then open http://127.0.0.1:8770. It binds localhost only; reach it remotely over
+an SSH tunnel or Tailscale, not a public interface.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

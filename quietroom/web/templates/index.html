@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quietroom</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Quietroom</h1>
+    <span id="status">idle</span>
+  </header>
+  <div id="controls">
+    <button id="baseline">Capture baseline</button>
+    <button id="start">Start sweep</button>
+    <button id="stop">Stop</button>
+  </div>
+  <canvas id="waterfall" width="800" height="240"></canvas>
+  <table id="suspects">
+    <thead><tr><th>Score</th><th>Freq (MHz)</th><th>Band</th><th>Reasons</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

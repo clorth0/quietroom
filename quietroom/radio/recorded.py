@@ -57,3 +57,32 @@ class DemoDevice(RecordedDevice):
 
     def live_sweep(self) -> Iterator[PowerSpectrum]:
         yield self._live
+
+
+class StreamingDemoDevice(Device):
+    """Serves `n_clean` clean sweeps, then planted-bug sweeps, advancing a cursor."""
+
+    def __init__(self, n_clean: int = 3) -> None:
+        self._n_clean = n_clean
+        self._served = 0
+        self._clean = _flat(-95.0, 0.0)
+        bug = _flat(-95.0, 0.0)
+        bug.power_dbm[8] = -30.0          # strong carrier at 308 MHz (covert band)
+        self._bug = bug
+
+    def probe(self) -> DeviceInfo:
+        return DeviceInfo(serial="demo", board="StreamingDemoDevice", firmware="n/a")
+
+    def sweep(self, f_start_hz, f_stop_hz, bin_hz, cycles=1):
+        for _ in range(cycles):
+            clean = self._served < self._n_clean
+            self._served += 1
+            src = self._clean if clean else self._bug
+            yield PowerSpectrum(src.freqs_hz, src.power_dbm.copy(), float(self._served))
+
+    def capture_iq(self, center_hz, sample_rate, n_samples):
+        return np.zeros(n_samples, dtype=np.complex64)
+
+
+def streaming_demo_device(n_clean: int = 3) -> StreamingDemoDevice:
+    return StreamingDemoDevice(n_clean=n_clean)
