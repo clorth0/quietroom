@@ -8,6 +8,7 @@ from quietroom.bands import bands_for, label_for
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device
+from quietroom.radio.hackrf import DEFAULT_BIN_HZ
 from quietroom.scan import capture_baseline as _capture_baseline
 from quietroom.scan import investigate as _investigate
 
@@ -37,7 +38,7 @@ class ScanSession:
         device: Device,
         f_start_hz: int = 300_000_000,
         f_stop_hz: int = 320_000_000,
-        bin_hz: int = 1_000_000,
+        bin_hz: int = DEFAULT_BIN_HZ,
         region: str = "us",
     ) -> None:
         self.device = device

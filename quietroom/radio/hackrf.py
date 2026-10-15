@@ -25,6 +25,12 @@ HACKRF_INFO = shutil.which("hackrf_info") or "/opt/homebrew/bin/hackrf_info"
 MIN_HZ = 1_000_000
 MAX_HZ = 6_000_000_000
 DEFAULT_LNA = 16
+# Default sweep resolution. hackrf_sweep's firmware captures a fixed block of
+# samples at each 10 MHz step whatever -w is, so a finer bin costs little sweep
+# time; it only grows the host FFT and output. 25 kHz resolves 12.5/25 kHz NFM
+# bugs (<= the 50 kHz narrowband threshold) and lowers per-bin noise ~16 dB vs
+# 1 MHz, so narrow carriers stand out.
+DEFAULT_BIN_HZ = 25_000
 DEFAULT_VGA = 20
 IQ_BASEBAND_HZ = 1_750_000
 # HackRF gain ranges: LNA (IF) 0-40 dB in 8 dB steps, VGA (baseband) 0-62 dB in 2 dB steps.

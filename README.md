@@ -78,6 +78,13 @@ Run `uv run quietroom --help` for every option.
 
 - `hackrf_sweep` works in whole MHz, so sweep edges are rounded outward to the
   nearest MHz.
+- `--bin` defaults to 25 kHz. HackRF's sweep firmware captures the same block
+  of samples at every 10 MHz step regardless of bin width, so finer bins cost
+  little sweep time; they resolve 12.5/25 kHz NFM bugs as narrowband and lower
+  per-bin noise (~16 dB vs 1 MHz). Host-side cost grows with the bin count:
+  300-470 MHz at 25 kHz is ~6,800 bins (~4 ms to parse per sweep), but
+  1 MHz-6 GHz at 25 kHz is ~240,000 bins (~0.3 s per sweep in Python), so use
+  `--bin 1M` for multi-GHz overview sweeps and narrow in from there.
 - A suspect that occupies a single coarse bin cannot be proven narrowband;
   rescan with a finer `--bin` around it.
 - Scores are a 0-100 sum of: excess over baseline (capped at 20), the

@@ -10,7 +10,13 @@ from quietroom.audio.capture import audio_correlation_test
 from quietroom.engine.detectors.audio_corr import AUDIO_CORR_THRESHOLD
 from quietroom.engine.spectrum import Finding
 from quietroom.radio.device import Device
-from quietroom.radio.hackrf import DEFAULT_LNA, DEFAULT_VGA, HackRFDevice, _check_gain
+from quietroom.radio.hackrf import (
+    DEFAULT_BIN_HZ,
+    DEFAULT_LNA,
+    DEFAULT_VGA,
+    HackRFDevice,
+    _check_gain,
+)
 from quietroom.radio.recorded import demo_device
 from quietroom.scan import capture_baseline, confirmed_findings
 
@@ -72,8 +78,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="sweep start frequency (default 300M)")
     parser.add_argument("--stop", type=parse_freq, default=320_000_000,
                         help="sweep stop frequency (default 320M)")
-    parser.add_argument("--bin", type=parse_freq, default=1_000_000,
-                        help="sweep bin width (default 1M; finer confirms narrowband)")
+    parser.add_argument("--bin", type=parse_freq, default=DEFAULT_BIN_HZ,
+                        help="sweep bin width (default 25k; 2445 Hz-5M). Use a "
+                             "coarser bin (e.g. 1M) for multi-GHz spans")
     parser.add_argument("--baseline-cycles", type=int, default=5,
                         help="number of sweeps to average into the baseline")
     parser.add_argument("--investigate", type=parse_freq, default=None,
