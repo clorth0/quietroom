@@ -65,7 +65,9 @@ def build_sweep_cmd(
     _check_gain(lna_gain, vga_gain)
     cmd = [
         HACKRF_SWEEP,
-        "-f", f"{f_start_hz // 1_000_000}:{f_stop_hz // 1_000_000}",
+        # hackrf_sweep -f takes whole MHz: round outward so the requested
+        # span is always covered (floor start, ceil stop).
+        "-f", f"{f_start_hz // 1_000_000}:{-(-f_stop_hz // 1_000_000)}",
         "-w", str(bin_hz),
         "-l", str(lna_gain),
         "-g", str(vga_gain),

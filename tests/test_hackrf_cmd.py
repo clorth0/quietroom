@@ -72,3 +72,9 @@ def test_invalid_vga_gain_rejected(vga):
         hackrf.build_sweep_cmd(100_000_000, 200_000_000, 1_000_000, vga_gain=vga)
     with pytest.raises(ValueError):
         hackrf.build_iq_cmd(101_100_000, 2_000_000, 200_000, vga_gain=vga)
+
+
+def test_sweep_cmd_rounds_sub_mhz_edges_outward():
+    # hackrf_sweep -f takes whole MHz; never silently shrink the requested span.
+    cmd = hackrf.build_sweep_cmd(433_050_000, 434_790_000, 25_000)
+    assert cmd[cmd.index("-f") + 1] == "433:435"

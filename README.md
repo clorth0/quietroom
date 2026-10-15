@@ -13,9 +13,78 @@ intended use.
 
 ## Status
 
-Early development. The detection engine (baseline differencing, four-detector
-scoring, ranked findings) is implemented and tested. The radio, audio, and web
-layers are next.
+Alpha (v0.2.x). The detection engine, HackRF radio layer, audio-correlation
+test, terminal CLI, and localhost web UI are all implemented and covered by a
+hardware-free test suite. Detection thresholds and scoring weights are still
+being tuned against real sweeps; treat scores as triage, not proof.
+
+## Install
+
+Requirements:
+
+- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- HackRF host tools on your `PATH` (`hackrf_info`, `hackrf_sweep`,
+  `hackrf_transfer`): `brew install hackrf` (macOS) or
+  `sudo apt install hackrf` (Debian/Ubuntu)
+- For the audio-correlation test only: PortAudio (`brew install portaudio` /
+  `sudo apt install libportaudio2`) plus a speaker and microphone in the room
+
+```
+git clone https://github.com/clorth0/quietroom.git
+cd quietroom
+uv sync                    # runtime deps + dev tools (pytest, ruff, mypy)
+uv sync --extra audio      # optional: speaker/mic for --investigate
+uv run pytest              # hardware-free test suite
+uv run quietroom --demo    # try it with no HackRF attached
+```
+
+## Usage
+
+Frequencies accept `k`/`M`/`G` suffixes (`300M`, `433.92MHz`, `2.4G`, `25k`);
+bare numbers are Hz.
+
+```
+# Sweep 300-470 MHz at 25 kHz resolution: capture a baseline, then look for
+# new emitters. Keep the room quiet and suspected bugs "off" (or out of the
+# room) during the baseline if you can.
+uv run quietroom --start 300M --stop 470M --bin 25k
+
+# Show why each suspect scored what it did
+uv run quietroom --start 300M --stop 470M --bin 25k -v
+
+# Tune sensitivity: lower -k flags weaker changes; gains are HackRF LNA/VGA
+uv run quietroom --start 2.4G --stop 2.5G --bin 100k -k 3 --lna 24 --vga 30
+
+# Outside the US, use the matching band catalog; require a suspect to show up
+# in at least 3 of 5 live sweeps before reporting it
+uv run quietroom --region eu --live-sweeps 5 --min-hits 3
+
+# Audio-correlation test on a suspect: plays a chirp in the room and checks
+# whether the emitter's envelope follows it
+uv run quietroom --investigate 308M
+```
+
+Example (demo) output:
+
+```
+SCORE    FREQ (MHz)  BAND                      REASONS
+  100       308.000  unknown                   not in any known band, unresolved single-bin signal (<= 1000 kHz); rescan with a finer --bin to confirm narrowband, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
+                                               score: snr=+20 catalog=+30 signatures=+42 persistence=+10
+```
+
+Run `uv run quietroom --help` for every option.
+
+### Notes
+
+- `hackrf_sweep` works in whole MHz, so sweep edges are rounded outward to the
+  nearest MHz.
+- A suspect that occupies a single coarse bin cannot be proven narrowband;
+  rescan with a finer `--bin` around it.
+- Scores are a 0-100 sum of: excess over baseline (capped at 20), the
+  known-band catalog (+30 unknown, -40 broadcast bands, -10 shared
+  ISM/WiFi/cellular bands, 0 for a strong emitter in a shared band),
+  bug-signature heuristics, persistence across live sweeps (up to +10), and,
+  after `--investigate`, the audio test (+50). Scores are capped at 100.
 
 ## How it works
 
