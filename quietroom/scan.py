@@ -9,6 +9,7 @@ from quietroom.engine.baseline import build_baseline
 from quietroom.engine.detectors.audio_corr import score_audio
 from quietroom.engine.detectors.catalog import score_band
 from quietroom.engine.detectors.signatures import score_signatures
+from quietroom.engine.persistence import confirm_findings
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.score import score_candidate
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
@@ -46,6 +47,26 @@ def live_findings(
     else:
         spectrum = next(iter(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=1)))
     return sweep_findings(spectrum, baseline, bands=bands)
+
+
+def confirmed_findings(
+    device: Device,
+    baseline: Baseline,
+    n_sweeps: int,
+    min_hits: int,
+    f_start_hz: int = 0,
+    f_stop_hz: int = 0,
+    bin_hz: int = 0,
+    live: Iterator[PowerSpectrum] | None = None,
+    bands: list[Band] = BANDS,
+) -> list[Finding]:
+    """Take `n_sweeps` live sweeps; keep emitters seen in at least `min_hits`."""
+    if live is not None:
+        spectra = [s for _, s in zip(range(n_sweeps), live)]
+    else:
+        spectra = list(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=n_sweeps))
+    batches = [sweep_findings(s, baseline, bands=bands) for s in spectra]
+    return confirm_findings(batches, min_hits=min(min_hits, len(batches)))
 
 
 def investigate(

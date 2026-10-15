@@ -44,3 +44,20 @@ def test_region_flag_accepts_eu():
     from quietroom.cli import main
     with contextlib.redirect_stdout(io.StringIO()):
         assert main(["--demo", "--region", "eu"]) == 0
+
+
+def test_live_sweeps_and_min_hits_flags():
+    import contextlib
+    import io
+    from quietroom.cli import main
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert main(["--demo", "--live-sweeps", "3", "--min-hits", "2"]) == 0
+    assert "persistent" in buf.getvalue()
+
+
+def test_min_hits_cannot_exceed_live_sweeps():
+    import pytest
+    from quietroom.cli import main
+    with pytest.raises(SystemExit):
+        main(["--demo", "--live-sweeps", "2", "--min-hits", "3"])

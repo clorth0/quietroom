@@ -37,3 +37,23 @@ def test_investigate_unknown_frequency_raises():
         raise AssertionError("expected KeyError")
     except KeyError:
         pass
+
+
+def test_repeated_sweeps_confirm_the_bug():
+    s = ScanSession(streaming_demo_device(n_clean=3),
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000, bin_hz=1_000_000)
+    s.capture_baseline(cycles=3)
+    _, first = s.sweep_once()
+    _, second = s.sweep_once()
+    assert any("unconfirmed" in r for r in first[0]["reasons"])
+    assert any("persistent" in r for r in second[0]["reasons"])
+    assert second[0]["score"] >= first[0]["score"]
+
+
+def test_new_baseline_resets_persistence():
+    s = ScanSession(streaming_demo_device(n_clean=3))
+    s.capture_baseline(cycles=3)
+    s.sweep_once(); s.sweep_once()
+    assert s.tracker.sweeps_seen == 2
+    s.capture_baseline(cycles=1)
+    assert s.tracker.sweeps_seen == 0

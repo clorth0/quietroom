@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 
+from quietroom.engine.persistence import PersistenceTracker
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.spectrum import Baseline, Finding, PowerSpectrum
 from quietroom.radio.device import Device
@@ -43,6 +44,7 @@ class ScanSession:
         self.baseline: Baseline | None = None
         self._last: dict[float, Finding] = {}
         self._lock = threading.Lock()
+        self.tracker = PersistenceTracker(window=5, min_hits=2)
 
     def capture_baseline(self, cycles: int = 5) -> int:
         baseline = _capture_baseline(
@@ -50,6 +52,7 @@ class ScanSession:
         )
         with self._lock:
             self.baseline = baseline
+            self.tracker.reset()
         return baseline.sweep_count
 
     def sweep_once(self) -> tuple[dict, list[dict]]:
@@ -60,6 +63,9 @@ class ScanSession:
             baseline = self.baseline
         findings: list[Finding] = sweep_findings(spectrum, baseline) if baseline is not None else []
         with self._lock:
+            if baseline is not None:
+                findings = self.tracker.update(findings)
+                findings.sort(key=lambda f: f.score, reverse=True)
             self._last = {f.candidate.center_freq_hz: f for f in findings}
         return spectrum_payload(spectrum), [finding_payload(f) for f in findings]
 
