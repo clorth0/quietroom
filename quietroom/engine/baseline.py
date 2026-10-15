@@ -30,7 +30,7 @@ def align_to(ps: PowerSpectrum, grid: np.ndarray) -> np.ndarray:
     step = float(np.min(np.diff(grid))) if len(grid) > 1 else 1.0
     tol = step / 2.0
     idx = np.searchsorted(grid, ps.freqs_hz)
-    for k, (f, p) in enumerate(zip(ps.freqs_hz, ps.power_dbm)):
+    for k, (f, p) in enumerate(zip(ps.freqs_hz, ps.power_dbm, strict=True)):
         for j in (idx[k] - 1, idx[k]):
             if 0 <= j < len(grid) and abs(grid[j] - f) < tol:
                 out[j] = p

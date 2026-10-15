@@ -1,5 +1,7 @@
+import pytest
 
 from quietroom.radio import hackrf
+from quietroom.radio.device import DeviceError
 
 
 class _FakePopen:
@@ -36,10 +38,6 @@ def test_sweep_yields_power_spectrum(monkeypatch):
     assert first.power_dbm[1] == -70.0   # 200 MHz bin, cycle 1
     assert first.freqs_hz[0] < first.freqs_hz[1]
 
-
-import pytest
-
-from quietroom.radio.device import DeviceError
 
 
 class _DyingPopen(_FakePopen):
