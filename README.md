@@ -32,7 +32,8 @@ Requirements:
 ```
 git clone https://github.com/clorth0/quietroom.git
 cd quietroom
-uv sync --extra dev        # runtime deps + pytest
+uv sync                    # runtime deps + dev tools (pytest, ruff, mypy)
+uv sync --extra audio      # optional: speaker/mic for --investigate
 uv run pytest              # hardware-free test suite
 uv run quietroom --demo    # try it with no HackRF attached
 ```
@@ -54,6 +55,10 @@ uv run quietroom --start 300M --stop 470M --bin 25k -v
 # Tune sensitivity: lower -k flags weaker changes; gains are HackRF LNA/VGA
 uv run quietroom --start 2.4G --stop 2.5G --bin 100k -k 3 --lna 24 --vga 30
 
+# Outside the US, use the matching band catalog; require a suspect to show up
+# in at least 3 of 5 live sweeps before reporting it
+uv run quietroom --region eu --live-sweeps 5 --min-hits 3
+
 # Audio-correlation test on a suspect: plays a chirp in the room and checks
 # whether the emitter's envelope follows it
 uv run quietroom --investigate 308M
@@ -63,8 +68,8 @@ Example (demo) output:
 
 ```
 SCORE    FREQ (MHz)  BAND                      REASONS
-   85       308.000  unknown                   not in any known band, near-field strong signal, in common analog bug band
-                                               score: snr=+20 catalog=+30 signatures=+35
+  100       308.000  unknown                   not in any known band, unresolved single-bin signal (<= 1000 kHz); rescan with a finer --bin to confirm narrowband, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
+                                               score: snr=+20 catalog=+30 signatures=+42 persistence=+10
 ```
 
 Run `uv run quietroom --help` for every option.
@@ -76,8 +81,10 @@ Run `uv run quietroom --help` for every option.
 - A suspect that occupies a single coarse bin cannot be proven narrowband;
   rescan with a finer `--bin` around it.
 - Scores are a 0-100 sum of: excess over baseline (capped at 20), the
-  known-band catalog (+30 unknown / negative in known bands), bug-signature
-  heuristics, and, after `--investigate`, the audio test (+50).
+  known-band catalog (+30 unknown, -40 broadcast bands, -10 shared
+  ISM/WiFi/cellular bands, 0 for a strong emitter in a shared band),
+  bug-signature heuristics, persistence across live sweeps (up to +10), and,
+  after `--investigate`, the audio test (+50). Scores are capped at 100.
 
 ## How it works
 
