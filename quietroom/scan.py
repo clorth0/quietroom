@@ -1,6 +1,7 @@
 """Orchestrate a device + the engine into a sweep-now scan."""
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterator
 
 from quietroom.bands import BANDS, Band
@@ -62,7 +63,7 @@ def confirmed_findings(
 ) -> list[Finding]:
     """Take `n_sweeps` live sweeps; keep emitters seen in at least `min_hits`."""
     if live is not None:
-        spectra = [s for _, s in zip(range(n_sweeps), live)]
+        spectra = list(itertools.islice(live, n_sweeps))
     else:
         spectra = list(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=n_sweeps))
     batches = [sweep_findings(s, baseline, bands=bands) for s in spectra]

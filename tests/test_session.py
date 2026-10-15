@@ -53,7 +53,8 @@ def test_repeated_sweeps_confirm_the_bug():
 def test_new_baseline_resets_persistence():
     s = ScanSession(streaming_demo_device(n_clean=3))
     s.capture_baseline(cycles=3)
-    s.sweep_once(); s.sweep_once()
+    s.sweep_once()
+    s.sweep_once()
     assert s.tracker.sweeps_seen == 2
     s.capture_baseline(cycles=1)
     assert s.tracker.sweeps_seen == 0
