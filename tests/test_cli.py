@@ -29,7 +29,8 @@ def test_main_demo_prints_a_finding(capsys):
 
 
 def test_demo_flags_unresolved_single_bin():
-    import io, contextlib
+    import contextlib
+    import io
     from quietroom.cli import main
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
