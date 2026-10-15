@@ -2,6 +2,7 @@ body { background:#0d0f12; color:#d7dde3; font-family: system-ui, sans-serif; ma
 header { display:flex; align-items:baseline; gap:1rem; }
 h1 { font-size:1.2rem; margin:0; letter-spacing:.08em; }
 #status { color:#7a8694; }
+#status.status-error { color:#ff6b6b; font-weight:600; }
 #controls { margin:.75rem 0; display:flex; gap:.5rem; }
 button { background:#1b2027; color:#d7dde3; border:1px solid #2c343d; padding:.4rem .8rem; border-radius:4px; cursor:pointer; }
 button:hover { background:#232a33; }

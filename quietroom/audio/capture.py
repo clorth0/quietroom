@@ -66,14 +66,21 @@ def audio_correlation_test(
     offset_hz = int(sample_rate * IQ_OFFSET_FRACTION)
     channel_bw = min(CHANNEL_BW_HZ, offset_hz)   # keep the DC spike out of band
     captured: dict[str, np.ndarray] = {}
+    failure: list[BaseException] = []
 
     def _capture() -> None:
-        captured["iq"] = device.capture_iq(int(center_hz) + offset_hz, sample_rate, n_iq)
+        try:
+            captured["iq"] = device.capture_iq(int(center_hz) + offset_hz, sample_rate, n_iq)
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller's thread
+            failure.append(e)
 
     thread = threading.Thread(target=_capture)
     thread.start()
     mic = play_record(chirp, audio_fs)          # blocks ~duration_s, runs with capture
     thread.join()
+    if failure:
+        # Never turn a failed capture into "correlation 0" (a false all-clear).
+        raise failure[0]
 
     iq = captured.get("iq", np.zeros(0, dtype=np.complex64))
 

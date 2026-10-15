@@ -132,7 +132,11 @@ def create_app(
         except (TypeError, ValueError):
             emit("error", {"message": "invalid cycles"})
             return
-        count = session.capture_baseline(cycles=max(1, min(cycles, 30)))
+        try:
+            count = session.capture_baseline(cycles=max(1, min(cycles, 30)))
+        except Exception as e:  # noqa: BLE001 - device/engine failure -> UI
+            emit("error", {"message": f"baseline failed: {e}"})
+            return
         emit("baseline_ready", {"sweep_count": count})
 
     @socketio.on("investigate")
@@ -152,6 +156,9 @@ def create_app(
             payload = session.investigate(freq_hz, **_audio_kwargs())
         except KeyError:
             emit("error", {"message": "no current suspect at that frequency"})
+            return
+        except Exception as e:  # noqa: BLE001 - device/audio failure -> UI
+            emit("error", {"message": f"investigate failed: {e}"})
             return
         emit("finding", payload)
 
