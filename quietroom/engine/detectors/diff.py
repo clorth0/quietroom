@@ -30,9 +30,12 @@ def find_candidates(
             j += 1
         if (j - i) >= min_bins:
             seg_freqs = live.freqs_hz[i:j]
+            n_bins = j - i
             seg_power = live.power_dbm[i:j]
             peak = int(np.argmax(seg_power))
-            bw = float(seg_freqs[-1] - seg_freqs[0]) or bin_hz
+            # Each bin covers bin_hz, so the occupied width is n_bins * bin_hz
+            # (last - first undercounts by one bin and is 0 for a single bin).
+            bw = n_bins * bin_hz
             excess = float(seg_power[peak] - baseline.mean_dbm[i + peak])
             candidates.append(
                 Candidate(
@@ -40,6 +43,8 @@ def find_candidates(
                     bandwidth_hz=bw,
                     peak_power_dbm=float(seg_power[peak]),
                     snr_over_baseline_db=excess,
+                    bin_hz=bin_hz,
+                    n_bins=n_bins,
                 )
             )
         i = j

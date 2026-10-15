@@ -39,3 +39,23 @@ def test_two_separated_carriers_become_two_candidates():
     live.power_dbm[7] = -55.0
     cands = find_candidates(live, base, k=4.0)
     assert len(cands) == 2
+
+
+def test_single_bin_candidate_bandwidth_is_one_bin():
+    base = build_baseline([_flat(-90), _flat(-90), _flat(-90)])
+    live = _flat(-90)
+    live.power_dbm[4] = -40.0
+    (c,) = find_candidates(live, base, k=4.0)
+    assert c.bandwidth_hz == 10e3
+    assert c.n_bins == 1
+    assert c.bin_hz == 10e3
+
+
+def test_multi_bin_candidate_bandwidth_counts_every_bin():
+    # Three contiguous hot bins occupy 3 * 10 kHz, not (last - first) = 20 kHz.
+    base = build_baseline([_flat(-90), _flat(-90), _flat(-90)])
+    live = _flat(-90)
+    live.power_dbm[3:6] = -40.0
+    (c,) = find_candidates(live, base, k=4.0)
+    assert c.bandwidth_hz == 30e3
+    assert c.n_bins == 3

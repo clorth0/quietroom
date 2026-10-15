@@ -32,3 +32,20 @@ def test_clean_candidate_scores_zero():
     r = score_signatures(_cand(freq=200e6, bw=5_000_000.0, power=-95.0))
     assert r.contribution == 0.0
     assert r.reasons == []
+
+
+def test_single_bin_at_coarse_resolution_gets_partial_credit():
+    # A 1-bin hit at 1 MHz resolution cannot prove narrowband, but it is
+    # still unresolved and should not be ignored entirely.
+    c = Candidate(center_freq_hz=200e6, bandwidth_hz=1e6, peak_power_dbm=-70.0,
+                  snr_over_baseline_db=20.0, bin_hz=1e6, n_bins=1)
+    r = score_signatures(c)
+    assert "narrowband carrier" not in r.reasons
+    assert any("unresolved single-bin" in s for s in r.reasons)
+    assert 0 < r.contribution < 15.0
+
+
+def test_multi_bin_coarse_signal_gets_no_narrowband_credit():
+    c = Candidate(center_freq_hz=200e6, bandwidth_hz=3e6, peak_power_dbm=-70.0,
+                  snr_over_baseline_db=20.0, bin_hz=1e6, n_bins=3)
+    assert score_signatures(c).contribution == 0.0
