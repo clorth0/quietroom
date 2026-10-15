@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from quietroom.bands import BANDS, Band
 from quietroom.audio.capture import audio_correlation_test
 from quietroom.engine.baseline import build_baseline
 from quietroom.engine.detectors.audio_corr import score_audio
@@ -33,6 +34,7 @@ def live_findings(
     f_start_hz: int = 0,
     f_stop_hz: int = 0,
     bin_hz: int = 0,
+    bands: list[Band] = BANDS,
 ) -> list[Finding]:
     """Take one live sweep and return ranked findings against the baseline.
 
@@ -43,7 +45,7 @@ def live_findings(
         spectrum = next(iter(live))
     else:
         spectrum = next(iter(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=1)))
-    return sweep_findings(spectrum, baseline)
+    return sweep_findings(spectrum, baseline, bands=bands)
 
 
 def investigate(
@@ -51,13 +53,14 @@ def investigate(
     candidate: Candidate,
     *,
     audio_test=audio_correlation_test,
+    bands: list[Band] = BANDS,
     **audio_kwargs,
 ) -> Finding:
     """Run the audio-correlation test on a candidate and re-score it with all detectors."""
     correlation = audio_test(device, candidate.center_freq_hz, **audio_kwargs)
     results = [
-        score_band(candidate),
+        score_band(candidate, bands),
         score_signatures(candidate),
         score_audio(correlation),
     ]
-    return score_candidate(candidate, results)
+    return score_candidate(candidate, results, bands)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+from quietroom.bands import REGIONS, bands_for
 from quietroom.audio.capture import audio_correlation_test
 from quietroom.engine.detectors.audio_corr import AUDIO_CORR_THRESHOLD
 from quietroom.engine.spectrum import Finding
@@ -52,7 +53,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--investigate", type=int, default=None,
                         metavar="FREQ_HZ",
                         help="run the audio-correlation test at this frequency (Hz)")
+    parser.add_argument("--region", choices=sorted(REGIONS), default="us",
+                        help="band catalog used to explain known emitters")
     args = parser.parse_args(argv)
+    bands = bands_for(args.region)
 
     if args.investigate is not None:
         if args.demo:
@@ -76,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         demo = demo_device()
         baseline = capture_baseline(demo, args.start, args.stop, args.bin,
                                     cycles=3)
-        findings = live_findings(demo, baseline, live=demo.live_sweep())
+        findings = live_findings(demo, baseline, live=demo.live_sweep(), bands=bands)
         print(format_findings(findings))
         return 0
 
@@ -90,7 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Sweeping for suspicious emitters...")
     findings = live_findings(dev, baseline,
                              f_start_hz=args.start, f_stop_hz=args.stop,
-                             bin_hz=args.bin)
+                             bin_hz=args.bin, bands=bands)
     print(format_findings(findings))
     return 0
 
