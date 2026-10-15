@@ -1,4 +1,4 @@
-from quietroom.bands import Band, BANDS, label_for
+from quietroom.bands import BANDS, label_for
 
 
 def test_fm_broadcast_is_catalogued():

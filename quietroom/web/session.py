@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 
 from quietroom.engine.pipeline import sweep_findings
-from quietroom.engine.spectrum import Finding, PowerSpectrum
+from quietroom.engine.spectrum import Baseline, Finding, PowerSpectrum
 from quietroom.radio.device import Device
 from quietroom.scan import capture_baseline as _capture_baseline
 from quietroom.scan import investigate as _investigate
@@ -40,7 +40,7 @@ class ScanSession:
         self.f_start_hz = f_start_hz
         self.f_stop_hz = f_stop_hz
         self.bin_hz = bin_hz
-        self.baseline = None
+        self.baseline: Baseline | None = None
         self._last: dict[float, Finding] = {}
         self._lock = threading.Lock()
 
@@ -58,7 +58,7 @@ class ScanSession:
         )
         with self._lock:
             baseline = self.baseline
-        findings = sweep_findings(spectrum, baseline) if baseline is not None else []
+        findings: list[Finding] = sweep_findings(spectrum, baseline) if baseline is not None else []
         with self._lock:
             self._last = {f.candidate.center_freq_hz: f for f in findings}
         return spectrum_payload(spectrum), [finding_payload(f) for f in findings]

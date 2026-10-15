@@ -55,7 +55,7 @@ class SweepAccumulator:
 
 def iq_cs8_to_complex(raw: bytes) -> np.ndarray:
     """Convert interleaved signed-8-bit IQ bytes to a complex64 array in [-1, 1)."""
-    a = np.frombuffer(raw, dtype=np.int8)
-    n = (len(a) // 2) * 2
-    a = a[:n].astype(np.float32) / 128.0
+    raw_i8 = np.frombuffer(raw, dtype=np.int8)
+    n = (len(raw_i8) // 2) * 2
+    a = raw_i8[:n].astype(np.float32) / 128.0
     return (a[0::2] + 1j * a[1::2]).astype(np.complex64)

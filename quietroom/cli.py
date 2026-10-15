@@ -59,20 +59,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Synthetic: demonstrate a positive verdict with no hardware.
             correlation = 0.85
         else:
-            dev = HackRFDevice()
-            if dev.probe() is None:
+            radio = HackRFDevice()
+            if radio.probe() is None:
                 print("HackRF not detected. Connect it, or use --demo.")
                 return 1
             print("Playing test tone and listening on the suspect frequency...")
-            correlation = audio_correlation_test(dev, args.investigate)
+            correlation = audio_correlation_test(radio, args.investigate)
         print(format_verdict(float(args.investigate), correlation))
         return 0
 
     if args.demo:
-        dev = demo_device()
-        baseline = capture_baseline(dev, args.start, args.stop, args.bin,
+        demo = demo_device()
+        baseline = capture_baseline(demo, args.start, args.stop, args.bin,
                                     cycles=3)
-        findings = live_findings(dev, baseline, live=dev.live_sweep())
+        findings = live_findings(demo, baseline, live=demo.live_sweep())
         print(format_findings(findings))
         return 0
 
@@ -89,3 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                              bin_hz=args.bin)
     print(format_findings(findings))
     return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
