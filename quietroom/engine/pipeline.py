@@ -1,6 +1,8 @@
 """Orchestrate the engine: baseline + live sweep -> ranked findings."""
 from __future__ import annotations
 
+from quietroom.bands import BANDS, Band
+
 from quietroom.engine.detectors.catalog import score_band
 from quietroom.engine.detectors.diff import find_candidates
 from quietroom.engine.detectors.signatures import score_signatures
@@ -12,6 +14,7 @@ def sweep_findings(
     live: PowerSpectrum,
     baseline: Baseline,
     k: float = 4.0,
+    bands: list[Band] = BANDS,
 ) -> list[Finding]:
     """Run the diff + catalog + signature detectors and rank the results.
 
@@ -22,7 +25,7 @@ def sweep_findings(
     """
     findings: list[Finding] = []
     for candidate in find_candidates(live, baseline, k=k):
-        results = [score_band(candidate), score_signatures(candidate)]
-        findings.append(score_candidate(candidate, results))
+        results = [score_band(candidate, bands), score_signatures(candidate)]
+        findings.append(score_candidate(candidate, results, bands))
     findings.sort(key=lambda f: f.score, reverse=True)
     return findings

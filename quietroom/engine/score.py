@@ -1,7 +1,7 @@
 """Fuse detector outputs into a 0-100 suspicion score with reasons."""
 from __future__ import annotations
 
-from quietroom.bands import label_for
+from quietroom.bands import BANDS, Band, label_for
 from quietroom.engine.spectrum import Candidate, DetectorResult, Finding
 
 # Raw SNR over baseline contributes a small, capped amount on its own.
@@ -11,6 +11,7 @@ SNR_CAP_DB = 20.0
 def score_candidate(
     candidate: Candidate,
     results: list[DetectorResult],
+    bands: list[Band] = BANDS,
 ) -> Finding:
     breakdown: dict[str, float] = {}
     reasons: list[str] = []
@@ -25,7 +26,7 @@ def score_candidate(
         reasons.extend(r.reasons)
 
     score = float(max(0.0, min(100.0, total)))
-    band = label_for(candidate.center_freq_hz)
+    band = label_for(candidate.center_freq_hz, bands)
     band_label = band.label if band else "unknown"
 
     return Finding(

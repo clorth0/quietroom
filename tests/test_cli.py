@@ -36,3 +36,11 @@ def test_demo_flags_unresolved_single_bin():
     with contextlib.redirect_stdout(buf):
         assert main(["--demo"]) == 0
     assert "unresolved single-bin" in buf.getvalue()
+
+
+def test_region_flag_accepts_eu():
+    import contextlib
+    import io
+    from quietroom.cli import main
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert main(["--demo", "--region", "eu"]) == 0
