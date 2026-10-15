@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from quietroom.engine.baseline import zscores
+from quietroom.engine.baseline import aligned_live, zscores
 from quietroom.engine.spectrum import Baseline, Candidate, PowerSpectrum
 
 
@@ -14,6 +14,7 @@ def find_candidates(
     min_bins: int = 1,
 ) -> list[Candidate]:
     """Group contiguous bins whose power exceeds baseline by > k sigma."""
+    live = aligned_live(live, baseline)
     z = zscores(live, baseline)
     mask = z > k
     n = len(mask)

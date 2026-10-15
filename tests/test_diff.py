@@ -59,3 +59,13 @@ def test_multi_bin_candidate_bandwidth_counts_every_bin():
     (c,) = find_candidates(live, base, k=4.0)
     assert c.bandwidth_hz == 30e3
     assert c.n_bins == 3
+
+
+def test_find_candidates_on_live_sweep_with_dropped_bin():
+    base = build_baseline([_flat(-90), _flat(-90), _flat(-90)])
+    live = _flat(-90)
+    live.power_dbm[4] = -40.0
+    keep = [i for i in range(10) if i != 7]
+    live = PowerSpectrum(live.freqs_hz[keep], live.power_dbm[keep], 0.0)
+    cands = find_candidates(live, base, k=4.0)
+    assert len(cands) == 1 and cands[0].center_freq_hz == base.freqs_hz[4]
