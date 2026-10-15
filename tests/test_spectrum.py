@@ -1,6 +1,6 @@
 import numpy as np
 from quietroom.engine.spectrum import (
-    PowerSpectrum, Baseline, Candidate, DetectorResult, Finding,
+    PowerSpectrum, Candidate, DetectorResult, Finding,
 )
 
 

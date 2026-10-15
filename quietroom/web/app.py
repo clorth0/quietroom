@@ -77,7 +77,7 @@ def create_app(
     session = ScanSession(device) if device is not None else None
     app.config["DEMO"] = demo
     app.config["RUNNING"] = False
-    app.scan_session = session            # exposed for tests and handlers
+    app.scan_session = session  # type: ignore[attr-defined]  # for tests/handlers
 
     @app.after_request
     def _headers(resp):

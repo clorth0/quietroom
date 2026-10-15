@@ -1,4 +1,3 @@
-import numpy as np
 
 from quietroom.radio import hackrf
 

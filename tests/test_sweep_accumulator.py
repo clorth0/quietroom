@@ -1,6 +1,5 @@
 import math
 
-import numpy as np
 
 from quietroom.radio.parse import SweepAccumulator, DEAD_BIN_DBM
 

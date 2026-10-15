@@ -34,6 +34,6 @@ def test_investigate_unknown_frequency_raises():
     s.sweep_once()
     try:
         s.investigate(999_000_000.0, audio_test=lambda *a, **k: 0.9)
-        assert False, "expected KeyError"
+        raise AssertionError("expected KeyError")
     except KeyError:
         pass

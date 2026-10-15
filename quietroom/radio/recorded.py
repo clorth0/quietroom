@@ -41,7 +41,7 @@ def _flat(power_dbm: float, timestamp: float) -> PowerSpectrum:
     return PowerSpectrum(freqs, np.full(20, power_dbm, dtype=float), timestamp)
 
 
-def demo_device() -> "DemoDevice":
+def demo_device() -> DemoDevice:
     return DemoDevice()
 
 

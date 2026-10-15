@@ -27,7 +27,13 @@ def play_and_record(signal: np.ndarray, fs: int) -> np.ndarray:
     sounddevice is imported lazily here because importing it requires the PortAudio
     library at runtime, which is absent on headless CI. No other code path imports it.
     """
-    import sounddevice as sd
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError) as e:   # OSError: PortAudio library missing
+        raise RuntimeError(
+            "the audio-correlation test needs sounddevice and PortAudio: "
+            "install with `uv sync --extra audio` (or pip install 'quietroom[audio]')"
+        ) from e
 
     rec = sd.playrec(np.asarray(signal).reshape(-1, 1), samplerate=fs, channels=1)
     sd.wait()
