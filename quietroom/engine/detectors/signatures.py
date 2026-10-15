@@ -8,6 +8,9 @@ NEARFIELD_DBM = -40.0
 NARROWBAND_POINTS = 15.0
 NEARFIELD_POINTS = 15.0
 COVERT_POINTS = 20.0
+# A single hot bin wider than NARROWBAND_HZ: cannot prove narrowband at this
+# resolution, but it is unresolved, so it earns partial credit.
+UNRESOLVED_POINTS = 7.0
 
 # (start_hz, stop_hz, label) bands disproportionately used by covert transmitters.
 COVERT_BANDS = [
@@ -23,6 +26,12 @@ def score_signatures(candidate: Candidate) -> DetectorResult:
     if candidate.bandwidth_hz <= NARROWBAND_HZ:
         contribution += NARROWBAND_POINTS
         reasons.append("narrowband carrier")
+    elif candidate.n_bins == 1 and candidate.bin_hz > 0:
+        contribution += UNRESOLVED_POINTS
+        reasons.append(
+            f"unresolved single-bin signal (<= {candidate.bandwidth_hz / 1e3:.0f} kHz); "
+            "rescan with a finer --bin to confirm narrowband"
+        )
 
     if candidate.peak_power_dbm >= NEARFIELD_DBM:
         contribution += NEARFIELD_POINTS

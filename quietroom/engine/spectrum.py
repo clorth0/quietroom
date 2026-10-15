@@ -31,6 +31,10 @@ class Candidate:
     bandwidth_hz: float
     peak_power_dbm: float
     snr_over_baseline_db: float
+    # Sweep resolution the candidate was found at, and how many contiguous
+    # bins it occupied. bandwidth_hz == n_bins * bin_hz when known.
+    bin_hz: float = 0.0
+    n_bins: int = 1
 
 
 @dataclass

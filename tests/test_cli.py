@@ -26,3 +26,13 @@ def test_main_demo_prints_a_finding(capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "308.000" in captured.out   # the demo planted bug at 308 MHz
+
+
+def test_demo_flags_unresolved_single_bin():
+    import contextlib
+    import io
+    from quietroom.cli import main
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert main(["--demo"]) == 0
+    assert "unresolved single-bin" in buf.getvalue()
