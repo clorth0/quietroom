@@ -4,7 +4,10 @@ const tbody = document.querySelector("#suspects tbody");
 const canvas = document.getElementById("waterfall");
 const ctx = canvas.getContext("2d");
 
-function setStatus(t) { statusEl.textContent = t; }
+function setStatus(t, isError = false) {
+  statusEl.textContent = t;
+  statusEl.classList.toggle("status-error", isError);
+}
 
 document.getElementById("baseline").onclick = () => {
   setStatus("capturing baseline...");
@@ -14,7 +17,7 @@ document.getElementById("start").onclick = () => { socket.emit("start", {}); set
 document.getElementById("stop").onclick = () => { socket.emit("stop", {}); setStatus("stopped"); };
 
 socket.on("baseline_ready", (d) => setStatus(`baseline ready (${d.sweep_count} sweeps)`));
-socket.on("error", (d) => setStatus("error: " + d.message));
+socket.on("error", (d) => setStatus("error: " + d.message, true));
 
 // Color map: -110 dBm -> dark, -20 dBm -> bright.
 function color(dbm) {
