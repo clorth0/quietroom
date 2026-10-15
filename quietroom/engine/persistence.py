@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import replace
 
+from quietroom.engine.score import squash, unsquash
 from quietroom.engine.spectrum import Finding
 
 PERSIST_MAX_POINTS = 10.0
@@ -57,16 +58,16 @@ class PersistenceTracker:
 def _annotate(f: Finding, hits: int, n: int, min_hits: int) -> Finding:
     breakdown = dict(f.breakdown)
     reasons = list(f.reasons)
+    raw = f.raw_score if f.raw_score is not None else unsquash(f.score)
     if hits >= min_hits:
         bonus = PERSIST_MAX_POINTS * hits / n
         breakdown["persistence"] = bonus
         reasons.append(f"persistent: seen in {hits}/{n} sweeps")
-        score = float(min(100.0, f.score + bonus))
-    else:
-        breakdown["persistence"] = 0.0
-        reasons.append(f"unconfirmed: seen in {hits}/{n} sweeps")
-        score = f.score
-    return replace(f, score=score, reasons=reasons, breakdown=breakdown)
+        return replace(f, score=squash(raw + bonus), raw_score=raw + bonus,
+                       reasons=reasons, breakdown=breakdown)
+    breakdown["persistence"] = 0.0
+    reasons.append(f"unconfirmed: seen in {hits}/{n} sweeps")
+    return replace(f, reasons=reasons, breakdown=breakdown)
 
 
 def confirm_findings(batches: list[list[Finding]], min_hits: int = 2,

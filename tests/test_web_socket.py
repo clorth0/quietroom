@@ -22,7 +22,7 @@ def test_investigate_emits_finding_with_verdict():
     received = client.get_received()
     findings = [e for e in received if e["name"] == "finding"]
     assert findings
-    assert findings[0]["args"][0]["score"] >= 100.0
+    assert findings[0]["args"][0]["score"] >= 90.0
 
 
 def test_investigate_out_of_range_emits_error():

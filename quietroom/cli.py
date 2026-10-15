@@ -30,7 +30,10 @@ def parse_freq(text: str) -> int:
 
 
 def format_breakdown(f: Finding) -> str:
-    return " ".join(f"{k}={v:+.0f}" for k, v in f.breakdown.items())
+    parts = " ".join(f"{k}={v:+.0f}" for k, v in f.breakdown.items())
+    if f.raw_score is not None:
+        parts += f" (raw {f.raw_score:.0f})"
+    return parts
 
 
 def format_findings(findings: list[Finding], verbose: bool = False) -> str:

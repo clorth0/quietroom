@@ -68,8 +68,8 @@ Example (demo) output:
 
 ```
 SCORE    FREQ (MHz)  BAND                      REASONS
-  100       308.000  unknown                   not in any known band, unresolved single-bin signal (<= 1000 kHz); rescan with a finer --bin to confirm narrowband, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
-                                               score: snr=+20 catalog=+30 signatures=+42 persistence=+10
+   84       308.000  unknown                   not in any known band, unresolved single-bin signal (<= 1000 kHz); rescan with a finer --bin to confirm narrowband, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
+                                               score: snr=+20 catalog=+30 signatures=+42 persistence=+10 (raw 102)
 ```
 
 Run `uv run quietroom --help` for every option.
@@ -84,7 +84,11 @@ Run `uv run quietroom --help` for every option.
   known-band catalog (+30 unknown, -40 broadcast bands, -10 shared
   ISM/WiFi/cellular bands, 0 for a strong emitter in a shared band),
   bug-signature heuristics, persistence across live sweeps (up to +10), and,
-  after `--investigate`, the audio test (+50). Scores are capped at 100.
+  after `--investigate`, the audio test (+50). That raw total is mapped onto
+  0-100 with a saturating curve (`100 * (1 - exp(-raw / 55))`), so strong
+  suspects keep distinct, correctly ordered scores instead of all pinning at
+  100: ~90 raw is about 80, ~140 raw (audio-confirmed) is about 92. `-v`
+  shows the raw total.
 
 ## How it works
 
