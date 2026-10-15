@@ -4,8 +4,9 @@ from __future__ import annotations
 import threading
 
 from quietroom.engine.persistence import PersistenceTracker
+from quietroom.bands import bands_for, label_for
 from quietroom.engine.pipeline import sweep_findings
-from quietroom.engine.spectrum import Baseline, Finding, PowerSpectrum
+from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device
 from quietroom.scan import capture_baseline as _capture_baseline
 from quietroom.scan import investigate as _investigate
@@ -37,15 +38,27 @@ class ScanSession:
         f_start_hz: int = 300_000_000,
         f_stop_hz: int = 320_000_000,
         bin_hz: int = 1_000_000,
+        region: str = "us",
     ) -> None:
         self.device = device
         self.f_start_hz = f_start_hz
         self.f_stop_hz = f_stop_hz
         self.bin_hz = bin_hz
+        self.set_region(region)
         self.baseline: Baseline | None = None
         self._last: dict[float, Finding] = {}
         self._lock = threading.Lock()
         self.tracker = PersistenceTracker(window=5, min_hits=2)
+
+    def set_region(self, region: str) -> None:
+        """Switch the band catalog used to explain known emitters."""
+        bands = bands_for(region)          # raises ValueError if unknown
+        self.region = region.lower()
+        self.bands = bands
+
+    def score_label(self, c: Candidate) -> str:
+        band = label_for(c.center_freq_hz, self.bands)
+        return band.label if band else "unknown"
 
     def capture_baseline(self, cycles: int = 5) -> int:
         baseline = _capture_baseline(
@@ -62,7 +75,9 @@ class ScanSession:
         )
         with self._lock:
             baseline = self.baseline
-        findings: list[Finding] = sweep_findings(spectrum, baseline) if baseline is not None else []
+        findings: list[Finding] = (
+            sweep_findings(spectrum, baseline, bands=self.bands) if baseline is not None else []
+        )
         with self._lock:
             if baseline is not None:
                 findings = self.tracker.update(findings)
@@ -75,7 +90,7 @@ class ScanSession:
             finding = self._last.get(float(freq_hz))
         if finding is None:
             raise KeyError(f"no current suspect at {freq_hz} Hz")
-        updated = _investigate(self.device, finding.candidate, **audio_kwargs)
+        updated = _investigate(self.device, finding.candidate, bands=self.bands, **audio_kwargs)
         with self._lock:
             self._last[float(freq_hz)] = updated
         return finding_payload(updated)

@@ -126,6 +126,7 @@ audio investigate):
 
     uv run quietroom-web            # live HackRF
     uv run quietroom-web --demo     # no hardware
+    uv run quietroom-web --region eu   # EU band catalog (also switchable in the UI)
 
 Then open http://127.0.0.1:8770. It binds localhost only; reach it remotely over
 an SSH tunnel or Tailscale, not a public interface.
