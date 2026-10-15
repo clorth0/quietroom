@@ -15,6 +15,10 @@
     <button id="baseline">Capture baseline</button>
     <button id="start">Start sweep</button>
     <button id="stop">Stop</button>
+    <label for="region">Region</label>
+    <select id="region">
+      {% for r in regions %}<option value="{{ r }}"{% if r == region %} selected{% endif %}>{{ r | upper }}</option>{% endfor %}
+    </select>
   </div>
   <canvas id="waterfall" width="800" height="240"></canvas>
   <table id="suspects">

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from flask import Flask, abort, render_template, request
 from flask_socketio import SocketIO
 
+from quietroom.bands import REGIONS
 from quietroom.radio.recorded import streaming_demo_device
 from quietroom.web.session import ScanSession
 
@@ -51,6 +52,7 @@ def create_app(
     demo: bool = False,
     token: str | None = None,
     extra_hosts: frozenset[str] = frozenset(),
+    region: str = "us",
 ) -> tuple[Flask, SocketIO]:
     allowed_hosts = LOOPBACK_HOSTS | set(extra_hosts)
 
@@ -84,7 +86,7 @@ def create_app(
             from quietroom.radio.hackrf import HackRFDevice
 
             device = HackRFDevice()
-    session = ScanSession(device) if device is not None else None
+    session = ScanSession(device, region=region) if device is not None else None
     app.config["DEMO"] = demo
     app.config["RUNNING"] = False
     app.scan_session = session  # type: ignore[attr-defined]  # for tests/handlers
@@ -100,7 +102,11 @@ def create_app(
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return render_template(
+            "index.html",
+            regions=sorted(REGIONS),
+            region=session.region if session is not None else region,
+        )
 
     from flask_socketio import emit
 
@@ -121,6 +127,18 @@ def create_app(
         if given and hmac.compare_digest(str(given).encode(), token.encode()):
             return True
         return _token_ok()
+
+    @socketio.on("set_region")
+    def _on_set_region(data):
+        if session is None:
+            emit("error", {"message": "no device"})
+            return
+        try:
+            session.set_region(str((data or {}).get("region", "")))
+        except ValueError:
+            emit("error", {"message": f"unknown region; choose from {sorted(REGIONS)}"})
+            return
+        emit("region", {"region": session.region})
 
     @socketio.on("capture_baseline")
     def _on_capture_baseline(data):
@@ -184,9 +202,9 @@ def create_app(
 
 
 def build_server(demo: bool = False, host: str = "127.0.0.1", port: int = 8770,
-                 token: str | None = None):
+                 token: str | None = None, region: str = "us"):
     extra = frozenset() if is_loopback(host) else frozenset({host})
-    app, socketio = create_app(demo=demo, token=token, extra_hosts=extra)
+    app, socketio = create_app(demo=demo, token=token, extra_hosts=extra, region=region)
     app.config["HOST"] = host
     app.config["PORT"] = port
     return app, socketio
@@ -204,6 +222,8 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind host (loopback unless --allow-remote)")
     parser.add_argument("--port", type=int, default=8770)
+    parser.add_argument("--region", choices=sorted(REGIONS), default="us",
+                        help="initial band catalog (switchable in the UI)")
     parser.add_argument("--allow-remote", action="store_true",
                         help="permit a non-loopback --host; requires QUIETROOM_TOKEN")
     args = parser.parse_args(argv)
@@ -215,7 +235,7 @@ def main(argv=None) -> int:
         if not token or len(token) < 16:
             parser.error("--allow-remote needs QUIETROOM_TOKEN set (16+ chars)")
     app, socketio = build_server(demo=args.demo, host=args.host, port=args.port,
-                                 token=token)
+                                 token=token, region=args.region)
     url = f"http://{args.host}:{args.port}"
     print(f"Quietroom web UI on {url}{'/?token=<QUIETROOM_TOKEN>' if token else ''}"
           f"  (demo={args.demo})")

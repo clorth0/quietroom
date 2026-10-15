@@ -16,6 +16,13 @@ document.getElementById("baseline").onclick = () => {
 document.getElementById("start").onclick = () => { socket.emit("start", {}); setStatus("sweeping"); };
 document.getElementById("stop").onclick = () => { socket.emit("stop", {}); setStatus("stopped"); };
 
+document.getElementById("region").onchange = (e) => {
+  socket.emit("set_region", { region: e.target.value });
+};
+socket.on("region", (d) => {
+  document.getElementById("region").value = d.region;
+  setStatus(`band catalog: ${d.region.toUpperCase()}`);
+});
 socket.on("baseline_ready", (d) => setStatus(`baseline ready (${d.sweep_count} sweeps)`));
 socket.on("error", (d) => setStatus("error: " + d.message, true));
 
