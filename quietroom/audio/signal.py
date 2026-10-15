@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import correlate, firwin, lfilter, resample
+from scipy.signal import correlate, firwin, hilbert, lfilter, resample
 
 
 def make_chirp(duration_s: float, fs: int, f0: float = 500.0, f1: float = 3000.0) -> np.ndarray:
@@ -57,11 +57,17 @@ def best_lag_correlation(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
     if denom == 0:
         return 0.0
     corr = correlate(a, b, mode="full")          # length 2n-1; zero lag at index n-1
+    # Use the envelope (analytic magnitude) of the cross-correlation, not its
+    # raw samples. Real playback-to-capture latency is a fractional number of
+    # samples; for a chirp reaching near Nyquist, sampling the raw correlation
+    # at integer lags can miss the peak badly (0.74 at a half-sample offset),
+    # while its envelope is smooth and peaks at ~1 regardless of the offset.
+    env = np.abs(hilbert(corr))
     mid = n - 1
     lo = max(0, mid - max_lag)
-    hi = min(len(corr), mid + max_lag + 1)
-    peak = float(np.max(np.abs(corr[lo:hi])))
-    return peak / denom
+    hi = min(len(env), mid + max_lag + 1)
+    peak = float(np.max(env[lo:hi]))
+    return min(1.0, peak / denom)
 
 
 def channelize(
