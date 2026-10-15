@@ -23,6 +23,16 @@ def emit_tick(session, emit_fn) -> None:
     emit_fn("findings", {"findings": findings})
 
 
+def safe_tick(session, emit_fn) -> bool:
+    """emit_tick that turns a failure into an 'error' event; False means stop."""
+    try:
+        emit_tick(session, emit_fn)
+    except Exception as e:  # noqa: BLE001 - surface any device/engine failure
+        emit_fn("error", {"message": f"sweep failed: {e}"})
+        return False
+    return True
+
+
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 TOKEN_COOKIE = "quietroom_token"
 
@@ -146,7 +156,9 @@ def create_app(
 
     def _sweep_loop():
         while app.config["RUNNING"]:
-            emit_tick(session, socketio.emit)
+            if not safe_tick(session, socketio.emit):
+                app.config["RUNNING"] = False
+                break
             socketio.sleep(0.5)
 
     @socketio.on("start")

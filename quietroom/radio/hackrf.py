@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 
@@ -123,6 +124,16 @@ def probe_hackrf(timeout: float = 2.0) -> DeviceInfo | None:
     return parse_probe_output(result.stdout)
 
 
+def _tail(f, max_chars: int = 500) -> str:
+    """Last part of a binary temp file's text, stripped."""
+    try:
+        f.flush()
+        f.seek(0)
+        return f.read().decode(errors="replace").strip()[-max_chars:]
+    except (OSError, ValueError):
+        return ""
+
+
 class HackRFDevice(Device):
     def __init__(
         self,
@@ -143,9 +154,18 @@ class HackRFDevice(Device):
         cmd = build_sweep_cmd(
             f_start_hz, f_stop_hz, bin_hz, self.lna_gain, self.vga_gain, self.amp
         )
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1
-        )
+        # stderr goes to a temp file, not a pipe: hackrf_sweep logs status to
+        # stderr continuously and an unread pipe would eventually block it.
+        errlog = tempfile.TemporaryFile()
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=errlog, text=True, bufsize=1
+            )
+        except FileNotFoundError as e:
+            errlog.close()
+            raise DeviceError(
+                f"{cmd[0]} not found; install hackrf tools (hackrf_sweep)"
+            ) from e
         if proc.stdout is None:  # pragma: no cover - defensive
             raise DeviceError("hackrf_sweep produced no stdout")
         acc = SweepAccumulator()
@@ -154,19 +174,29 @@ class HackRFDevice(Device):
             for line in proc.stdout:
                 if not line.strip():
                     continue
-                hz_low, bin_width, powers = parse_sweep_line(line)
+                try:
+                    hz_low, bin_width, powers = parse_sweep_line(line)
+                except (IndexError, ValueError):
+                    continue        # status/garbage line; not sweep data
                 ps = acc.add(hz_low, bin_width, powers, timestamp=time.time())
                 if ps is not None:
                     yield ps
                     emitted += 1
                     if emitted >= cycles:
                         return
+            # stdout closed before we got every sweep: the process died.
+            code = proc.poll() if hasattr(proc, "poll") else proc.returncode
+            raise DeviceError(
+                f"hackrf_sweep exited (code {code}) after {emitted}/{cycles} sweeps: "
+                f"{_tail(errlog) or 'no error output'}"
+            )
         finally:
             proc.terminate()
             try:
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            errlog.close()
 
     def capture_iq(
         self, center_hz: int, sample_rate: int, n_samples: int
