@@ -61,3 +61,29 @@ def test_min_hits_cannot_exceed_live_sweeps():
     from quietroom.cli import main
     with pytest.raises(SystemExit):
         main(["--demo", "--live-sweeps", "2", "--min-hits", "3"])
+
+
+def test_cli_accepts_mhz_and_gain_flags(capsys, monkeypatch):
+    rc = main(["--demo", "--start", "300M", "--stop", "320M", "--bin", "1M",
+               "-k", "5", "--lna", "24", "--vga", "30"])
+    assert rc == 0
+    assert "308.000" in capsys.readouterr().out
+
+
+def test_cli_rejects_invalid_gain():
+    import pytest
+    with pytest.raises(SystemExit):
+        main(["--demo", "--lna", "7"])
+
+
+def test_verbose_shows_score_breakdown(capsys):
+    assert main(["--demo", "--verbose"]) == 0
+    out = capsys.readouterr().out
+    assert "snr=" in out and "catalog=" in out and "signatures=" in out
+
+
+def test_k_threshold_is_used(capsys):
+    # The demo bug is ~65 dB over a flat baseline (std floor 2 dB => z~32);
+    # an absurd k suppresses it, proving -k reaches the detector.
+    assert main(["--demo", "-k", "100"]) == 0
+    assert "No suspicious" in capsys.readouterr().out

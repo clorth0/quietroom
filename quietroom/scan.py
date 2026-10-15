@@ -37,6 +37,7 @@ def live_findings(
     f_stop_hz: int = 0,
     bin_hz: int = 0,
     bands: list[Band] = BANDS,
+    k: float = 4.0,
 ) -> list[Finding]:
     """Take one live sweep and return ranked findings against the baseline.
 
@@ -47,7 +48,7 @@ def live_findings(
         spectrum = next(iter(live))
     else:
         spectrum = next(iter(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=1)))
-    return sweep_findings(spectrum, baseline, bands=bands)
+    return sweep_findings(spectrum, baseline, k=k, bands=bands)
 
 
 def confirmed_findings(
@@ -60,13 +61,14 @@ def confirmed_findings(
     bin_hz: int = 0,
     live: Iterator[PowerSpectrum] | None = None,
     bands: list[Band] = BANDS,
+    k: float = 4.0,
 ) -> list[Finding]:
     """Take `n_sweeps` live sweeps; keep emitters seen in at least `min_hits`."""
     if live is not None:
         spectra = list(itertools.islice(live, n_sweeps))
     else:
         spectra = list(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=n_sweeps))
-    batches = [sweep_findings(s, baseline, bands=bands) for s in spectra]
+    batches = [sweep_findings(s, baseline, k=k, bands=bands) for s in spectra]
     return confirm_findings(batches, min_hits=min(min_hits, len(batches)))
 
 
