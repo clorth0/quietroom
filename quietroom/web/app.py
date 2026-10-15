@@ -107,9 +107,10 @@ def create_app(
     MIN_HZ, MAX_HZ = 1_000_000, 6_000_000_000
 
     def _audio_kwargs():
-        # In demo mode, synthesize a positive correlation (no mic/speaker/radio).
+        # In demo mode, run the real DSP with a loopback "mic" against the
+        # demo device's synthetic bug (no speaker/mic/radio needed).
         if app.config["DEMO"]:
-            return {"audio_test": lambda *a, **k: 0.85}
+            return {"play_record": lambda sig, fs: sig.astype(float)}
         return {}
 
     @socketio.on("connect")

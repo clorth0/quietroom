@@ -7,6 +7,7 @@ import numpy as np
 
 from quietroom.audio.signal import (
     best_lag_correlation,
+    channelize,
     iq_to_am_envelope,
     iq_to_fm_envelope,
     make_chirp,
@@ -18,7 +19,12 @@ DEFAULT_AUDIO_FS = 48_000
 DEFAULT_DURATION_S = 1.0
 DEFAULT_IQ_RATE = 2_000_000
 ENVELOPE_FS = 8_000          # common rate at which audio + RF envelopes are compared
-MAX_LAG_S = 0.25             # search +/- 0.25 s of latency between playback and capture
+MAX_LAG_S = 0.25
+# Tune this fraction of the sample rate above the target so the target sits
+# clear of the HackRF DC spike; the channel filter then removes the spike.
+IQ_OFFSET_FRACTION = 0.25
+# Channel width kept around the target (covers NFM/WFM-ish bugs up to ~100 kHz).
+CHANNEL_BW_HZ = 100_000             # search +/- 0.25 s of latency between playback and capture
 
 
 def play_and_record(signal: np.ndarray, fs: int) -> np.ndarray:
@@ -57,10 +63,12 @@ def audio_correlation_test(
     chirp = make_chirp(duration_s, audio_fs)
     n_iq = int(sample_rate * duration_s)
 
+    offset_hz = int(sample_rate * IQ_OFFSET_FRACTION)
+    channel_bw = min(CHANNEL_BW_HZ, offset_hz)   # keep the DC spike out of band
     captured: dict[str, np.ndarray] = {}
 
     def _capture() -> None:
-        captured["iq"] = device.capture_iq(int(center_hz), sample_rate, n_iq)
+        captured["iq"] = device.capture_iq(int(center_hz) + offset_hz, sample_rate, n_iq)
 
     thread = threading.Thread(target=_capture)
     thread.start()
@@ -71,8 +79,9 @@ def audio_correlation_test(
 
     # Bring the recorded room audio and both RF envelopes to a common rate.
     ref = resample_to(mic, max(int(len(mic) * ENVELOPE_FS / audio_fs), 1))
-    am = iq_to_am_envelope(iq, sample_rate, ENVELOPE_FS)
-    fm = iq_to_fm_envelope(iq, sample_rate, ENVELOPE_FS)
+    ch, ch_fs = channelize(iq, sample_rate, shift_hz=offset_hz, bandwidth_hz=channel_bw)
+    am = iq_to_am_envelope(ch, ch_fs, ENVELOPE_FS)
+    fm = iq_to_fm_envelope(ch, ch_fs, ENVELOPE_FS)
     max_lag = int(MAX_LAG_S * ENVELOPE_FS)
 
     return max(
