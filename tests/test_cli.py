@@ -92,3 +92,37 @@ def test_k_threshold_is_used(capsys):
 def test_verbose_shows_raw_total(capsys):
     assert main(["--demo", "-v"]) == 0
     assert "(raw " in capsys.readouterr().out
+
+
+def test_default_bin_resolves_narrowband_carriers(monkeypatch):
+    # Default bin must be <= the 50 kHz narrowband threshold so a real bug can
+    # earn full narrowband credit without the user knowing to pass --bin.
+    import quietroom.cli as cli
+    from quietroom.engine.detectors.signatures import NARROWBAND_HZ
+    seen = {}
+
+    class FakeRadio:
+        def __init__(self, *a, **k):
+            pass
+
+        def probe(self):
+            return None          # stop right after arg parsing
+
+    monkeypatch.setattr(cli, "HackRFDevice", FakeRadio)
+    real_parse = cli.argparse.ArgumentParser.parse_args
+
+    def spy(self, *a, **k):
+        ns = real_parse(self, *a, **k)
+        seen["bin"] = ns.bin
+        return ns
+
+    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args", spy)
+    assert cli.main([]) == 1
+    assert seen["bin"] <= NARROWBAND_HZ
+
+
+def test_web_session_default_bin_matches_cli():
+    from quietroom.radio.recorded import streaming_demo_device
+    from quietroom.web.session import ScanSession
+    from quietroom.cli import DEFAULT_BIN_HZ
+    assert ScanSession(streaming_demo_device()).bin_hz == DEFAULT_BIN_HZ
