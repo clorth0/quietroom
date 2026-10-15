@@ -36,6 +36,25 @@ class RecordedDevice(Device):
         return np.tile(self._iq, reps)[:n_samples]
 
 
+DEMO_BUG_HZ = 308_000_000
+
+
+def synthetic_bug_iq(
+    center_hz: int, sample_rate: int, n_samples: int, bug_hz: int = DEMO_BUG_HZ
+) -> np.ndarray:
+    """IQ for a demo room: an AM bug at bug_hz carrying the test chirp, plus a
+    DC/LO-leakage spike, as seen by a radio tuned to center_hz."""
+    from quietroom.audio.signal import make_chirp, resample_to
+
+    duration = n_samples / sample_rate
+    mod = resample_to(make_chirp(duration, 48_000), n_samples)
+    t = np.arange(n_samples) / sample_rate
+    bug = (1.0 + 0.5 * mod) * np.exp(1j * 2 * np.pi * (bug_hz - center_hz) * t)
+    rng = np.random.default_rng(0)
+    spike = 2.0 + 0.2 * rng.normal(size=n_samples)
+    return (bug + spike).astype(np.complex64)
+
+
 def _flat(power_dbm: float, timestamp: float) -> PowerSpectrum:
     freqs = np.arange(300e6, 300e6 + 1e6 * 20, 1e6)
     return PowerSpectrum(freqs, np.full(20, power_dbm, dtype=float), timestamp)
@@ -54,6 +73,9 @@ class DemoDevice(RecordedDevice):
         live = _flat(-95.0, 10.0)
         live.power_dbm[8] = -30.0  # strong narrowband carrier at 308 MHz (covert band)
         self._live = live
+
+    def capture_iq(self, center_hz, sample_rate, n_samples):
+        return synthetic_bug_iq(center_hz, sample_rate, n_samples)
 
     def live_sweep(self) -> Iterator[PowerSpectrum]:
         yield self._live
@@ -81,7 +103,7 @@ class StreamingDemoDevice(Device):
             yield PowerSpectrum(src.freqs_hz, src.power_dbm.copy(), float(self._served))
 
     def capture_iq(self, center_hz, sample_rate, n_samples):
-        return np.zeros(n_samples, dtype=np.complex64)
+        return synthetic_bug_iq(center_hz, sample_rate, n_samples)
 
 
 def streaming_demo_device(n_clean: int = 3) -> StreamingDemoDevice:

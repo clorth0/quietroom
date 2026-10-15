@@ -20,7 +20,9 @@ class _FakeIQDevice(Device):
     def capture_iq(self, center_hz, sample_rate, n_samples):
         mod = self._mod[:n_samples]
         t = np.arange(len(mod)) / sample_rate
-        carrier = np.exp(1j * 2 * np.pi * 1000 * t)
+        # The bug transmits at 308 MHz; it appears at (308 MHz - tuned center)
+        # in baseband, so honour whatever offset the caller tuned to.
+        carrier = np.exp(1j * 2 * np.pi * (308_000_000 - center_hz) * t)
         return ((1.0 + 0.5 * mod) * carrier).astype(np.complex64)
 
 

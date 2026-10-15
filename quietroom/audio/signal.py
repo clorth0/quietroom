@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import correlate, resample
+from scipy.signal import correlate, firwin, lfilter, resample
 
 
 def make_chirp(duration_s: float, fs: int, f0: float = 500.0, f1: float = 3000.0) -> np.ndarray:
@@ -62,3 +62,27 @@ def best_lag_correlation(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
     hi = min(len(corr), mid + max_lag + 1)
     peak = float(np.max(np.abs(corr[lo:hi])))
     return peak / denom
+
+
+def channelize(
+    iq: np.ndarray, fs: int, shift_hz: float, bandwidth_hz: float
+) -> tuple[np.ndarray, int]:
+    """Shift a signal sitting at -shift_hz to baseband, low-pass, and decimate.
+
+    The radio is tuned `shift_hz` above the target so the target is clear of
+    the HackRF's DC/LO-leakage spike. Mixing by +shift_hz moves it back to 0 Hz;
+    a FIR low-pass at bandwidth_hz/2 rejects the spike and neighbouring
+    emitters before demodulation. Returns (channel_iq, channel_fs).
+    """
+    x = np.asarray(iq, dtype=np.complex128)
+    if len(x) == 0:
+        return np.zeros(0, dtype=np.complex128), fs
+    t = np.arange(len(x)) / fs
+    x = x * np.exp(1j * 2 * np.pi * shift_hz * t)
+    cutoff = min(bandwidth_hz / 2.0, 0.45 * fs)
+    taps = firwin(129, cutoff, fs=fs)
+    # Drop the filter warm-up: its 0->carrier ramp would otherwise look like a
+    # huge AM step and dominate the envelope correlation.
+    x = lfilter(taps, 1.0, x)[len(taps) - 1:]
+    decim = max(1, int(fs // (4 * cutoff)))
+    return x[::decim], int(fs // decim)

@@ -56,8 +56,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.investigate is not None:
         if args.demo:
-            # Synthetic: demonstrate a positive verdict with no hardware.
-            correlation = 0.85
+            # Run the real DSP on a synthetic room: the demo device emits an AM
+            # bug carrying the test chirp, and the "mic" is a loopback.
+            correlation = audio_correlation_test(
+                demo_device(), args.investigate,
+                play_record=lambda sig, fs: sig.astype(float),
+            )
         else:
             radio = HackRFDevice()
             if radio.probe() is None:
