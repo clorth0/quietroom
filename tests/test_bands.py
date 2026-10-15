@@ -1,3 +1,5 @@
+import pytest
+
 from quietroom.bands import BANDS, label_for
 
 
@@ -25,8 +27,6 @@ def test_band_edges_are_inclusive():
     assert label_for(fm.stop_hz) is not None
 
 
-import pytest
-
 
 @pytest.mark.parametrize("freq,needle", [
     (740e6, "700"),          # LTE 700
@@ -42,7 +42,8 @@ def test_common_us_allocations_are_catalogued(freq, needle):
 
 def test_eu_region_has_868_ism_and_us_does_not():
     from quietroom.bands import bands_for
-    assert label_for(868.3e6, bands_for("us")) is None or "868" not in label_for(868.3e6, bands_for("us")).label
+    us = label_for(868.3e6, bands_for("us"))
+    assert us is None or "868" not in us.label
     eu = label_for(868.3e6, bands_for("eu"))
     assert eu is not None and "868" in eu.label
 
