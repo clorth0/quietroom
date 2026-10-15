@@ -78,7 +78,9 @@ class DemoDevice(RecordedDevice):
         return synthetic_bug_iq(center_hz, sample_rate, n_samples)
 
     def live_sweep(self) -> Iterator[PowerSpectrum]:
-        yield self._live
+        """Endless planted-bug sweeps (the bug is a steady carrier)."""
+        while True:
+            yield self._live
 
 
 class StreamingDemoDevice(Device):

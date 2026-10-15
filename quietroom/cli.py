@@ -11,7 +11,7 @@ from quietroom.engine.spectrum import Finding
 from quietroom.radio.device import Device
 from quietroom.radio.hackrf import HackRFDevice
 from quietroom.radio.recorded import demo_device
-from quietroom.scan import capture_baseline, live_findings
+from quietroom.scan import capture_baseline, confirmed_findings
 
 
 def format_findings(findings: list[Finding]) -> str:
@@ -55,7 +55,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="run the audio-correlation test at this frequency (Hz)")
     parser.add_argument("--region", choices=sorted(REGIONS), default="us",
                         help="band catalog used to explain known emitters")
+    parser.add_argument("--live-sweeps", type=int, default=3,
+                        help="live sweeps to take after the baseline")
+    parser.add_argument("--min-hits", type=int, default=2,
+                        help="report only emitters seen in at least this many live sweeps")
     args = parser.parse_args(argv)
+    if args.live_sweeps < 1 or not (1 <= args.min_hits <= args.live_sweeps):
+        parser.error("need --live-sweeps >= 1 and 1 <= --min-hits <= --live-sweeps")
     bands = bands_for(args.region)
 
     if args.investigate is not None:
@@ -80,7 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         demo = demo_device()
         baseline = capture_baseline(demo, args.start, args.stop, args.bin,
                                     cycles=3)
-        findings = live_findings(demo, baseline, live=demo.live_sweep(), bands=bands)
+        findings = confirmed_findings(demo, baseline, args.live_sweeps,
+                                      args.min_hits, live=demo.live_sweep(), bands=bands)
         print(format_findings(findings))
         return 0
 
@@ -92,9 +99,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     baseline = capture_baseline(dev, args.start, args.stop, args.bin,
                                 cycles=args.baseline_cycles)
     print("Sweeping for suspicious emitters...")
-    findings = live_findings(dev, baseline,
-                             f_start_hz=args.start, f_stop_hz=args.stop,
-                             bin_hz=args.bin, bands=bands)
+    findings = confirmed_findings(dev, baseline, args.live_sweeps, args.min_hits,
+                                  f_start_hz=args.start, f_stop_hz=args.stop,
+                                  bin_hz=args.bin, bands=bands)
     print(format_findings(findings))
     return 0
 
