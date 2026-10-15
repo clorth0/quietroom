@@ -24,6 +24,7 @@ def finding_payload(f: Finding) -> dict:
         "freq_hz": float(f.candidate.center_freq_hz),
         "freq_mhz": round(f.candidate.center_freq_hz / 1e6, 3),
         "score": round(f.score, 1),
+        "raw_score": None if f.raw_score is None else round(f.raw_score, 1),
         "band": f.band_label,
         "reasons": list(f.reasons),
     }

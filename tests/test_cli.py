@@ -87,3 +87,8 @@ def test_k_threshold_is_used(capsys):
     # an absurd k suppresses it, proving -k reaches the detector.
     assert main(["--demo", "-k", "100"]) == 0
     assert "No suspicious" in capsys.readouterr().out
+
+
+def test_verbose_shows_raw_total(capsys):
+    assert main(["--demo", "-v"]) == 0
+    assert "(raw " in capsys.readouterr().out

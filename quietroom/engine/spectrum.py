@@ -53,3 +53,5 @@ class Finding:
     band_label: str
     reasons: list[str] = field(default_factory=list)
     breakdown: dict[str, float] = field(default_factory=dict)
+    # Unbounded sum of detector contributions; `score` is squash(raw_score).
+    raw_score: float | None = None

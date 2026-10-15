@@ -17,7 +17,7 @@ def test_investigate_high_correlation_raises_score_and_adds_reason():
 
     finding = investigate(dev, _candidate(), audio_test=fake_audio_test)
     assert any("correlates with room audio" in r for r in finding.reasons)
-    assert finding.score >= 100.0   # audio adds 50 on top of an already-high score
+    assert finding.score >= 90.0    # audio adds 50 raw points on top of an already-high score
     assert "audio" in finding.breakdown
 
 

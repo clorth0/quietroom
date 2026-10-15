@@ -24,7 +24,7 @@ def test_investigate_uses_last_findings_and_audio_test():
     s.capture_baseline(cycles=3)
     s.sweep_once()
     payload = s.investigate(308_000_000.0, audio_test=lambda *a, **k: 0.9)
-    assert payload["score"] >= 100.0
+    assert payload["score"] >= 90.0
     assert any("correlates with room audio" in r for r in payload["reasons"])
 
 
