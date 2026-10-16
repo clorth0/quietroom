@@ -11,8 +11,8 @@ from flask import Flask, abort, render_template, request
 from flask_socketio import SocketIO
 
 from quietroom.bands import REGIONS
-from quietroom.radio.hackrf import MAX_HZ, MIN_HZ
 from quietroom.radio.recorded import streaming_demo_device
+from quietroom.web.commands import CommandContext, dispatch
 from quietroom.web.session import ScanSession
 
 _CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
@@ -111,91 +111,31 @@ def create_app(
 
     from flask_socketio import emit
 
-    def _audio_kwargs():
-        # In demo mode, run the real DSP with a loopback "mic" against the
-        # demo device's synthetic bug (no speaker/mic/radio needed).
-        if app.config["DEMO"]:
-            return {"play_record": lambda sig, fs: sig.astype(float)}
-        return {}
+    ctx = CommandContext(app, token, socketio, emit)
 
     @socketio.on("connect")
     def _on_connect(auth=None):
-        if token is None:
-            return True
-        given = (auth or {}).get("token") if isinstance(auth, dict) else None
-        if given and hmac.compare_digest(str(given).encode(), token.encode()):
-            return True
-        return _token_ok()
+        return dispatch("connect", auth, ctx)
 
     @socketio.on("set_region")
     def _on_set_region(data):
-        if session is None:
-            emit("error", {"message": "no device"})
-            return
-        try:
-            session.set_region(str((data or {}).get("region", "")))
-        except ValueError:
-            emit("error", {"message": f"unknown region; choose from {sorted(REGIONS)}"})
-            return
-        emit("region", {"region": session.region})
+        return dispatch("set_region", data, ctx)
 
     @socketio.on("capture_baseline")
     def _on_capture_baseline(data):
-        if session is None:
-            emit("error", {"message": "no device"})
-            return
-        try:
-            cycles = int((data or {}).get("cycles", 5))
-        except (TypeError, ValueError):
-            emit("error", {"message": "invalid cycles"})
-            return
-        try:
-            count = session.capture_baseline(cycles=max(1, min(cycles, 30)))
-        except Exception as e:  # noqa: BLE001 - device/engine failure -> UI
-            emit("error", {"message": f"baseline failed: {e}"})
-            return
-        emit("baseline_ready", {"sweep_count": count})
+        return dispatch("capture_baseline", data, ctx)
 
     @socketio.on("investigate")
     def _on_investigate(data):
-        if session is None:
-            emit("error", {"message": "no device"})
-            return
-        try:
-            freq_hz = float((data or {}).get("freq_hz"))
-        except (TypeError, ValueError):
-            emit("error", {"message": "invalid frequency"})
-            return
-        if not (MIN_HZ <= freq_hz <= MAX_HZ):
-            emit("error", {"message": "frequency out of range"})
-            return
-        try:
-            payload = session.investigate(freq_hz, **_audio_kwargs())
-        except KeyError:
-            emit("error", {"message": "no current suspect at that frequency"})
-            return
-        except Exception as e:  # noqa: BLE001 - device/audio failure -> UI
-            emit("error", {"message": f"investigate failed: {e}"})
-            return
-        emit("finding", payload)
-
-    def _sweep_loop():
-        while app.config["RUNNING"]:
-            if not safe_tick(session, socketio.emit):
-                app.config["RUNNING"] = False
-                break
-            socketio.sleep(0.5)
+        return dispatch("investigate", data, ctx)
 
     @socketio.on("start")
     def _on_start(data):
-        if session is None or app.config["RUNNING"]:
-            return
-        app.config["RUNNING"] = True
-        socketio.start_background_task(_sweep_loop)
+        return dispatch("start", data, ctx)
 
     @socketio.on("stop")
     def _on_stop(data):
-        app.config["RUNNING"] = False
+        return dispatch("stop", data, ctx)
 
     return app, socketio
 

@@ -1,0 +1,186 @@
+"""One parser for every socket event the web UI sends."""
+from __future__ import annotations
+
+import hmac
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, assert_never
+
+from quietroom.bands import REGIONS
+from quietroom.radio.hackrf import MAX_HZ, MIN_HZ
+
+
+@dataclass(frozen=True)
+class Connect:
+    auth: object
+
+
+@dataclass(frozen=True)
+class SetRegion:
+    region: str
+
+
+@dataclass(frozen=True)
+class CaptureBaseline:
+    cycles: int
+
+
+@dataclass(frozen=True)
+class Investigate:
+    freq_hz: float
+
+
+@dataclass(frozen=True)
+class Start:
+    pass
+
+
+@dataclass(frozen=True)
+class Stop:
+    pass
+
+
+Command = Connect | SetRegion | CaptureBaseline | Investigate | Start | Stop
+
+
+@dataclass
+class CommandContext:
+    app: Any
+    token: str | None
+    socketio: Any
+    emit: Callable[[str, dict], None]
+
+
+def parse_command(event: str, data: object) -> Command | str:
+    """Return a command, or an error string the UI can show."""
+    if event == "connect":
+        return Connect(data)
+    if event == "stop":
+        return Stop()
+    if event == "start":
+        return Start()
+    payload = data if isinstance(data, dict) else {}
+    if event == "set_region":
+        region = str(payload.get("region", "")).lower()
+        if region not in REGIONS:
+            return f"unknown region; choose from {sorted(REGIONS)}"
+        return SetRegion(region)
+    if event == "capture_baseline":
+        cycles = _whole_number(payload.get("cycles", 5))
+        if cycles is None or not 1 <= cycles <= 30:
+            return "invalid cycles"
+        return CaptureBaseline(cycles)
+    if event == "investigate":
+        freq = _frequency(payload.get("freq_hz"))
+        if isinstance(freq, str):
+            return freq
+        return Investigate(freq)
+    return f"unknown event {event}"
+
+
+def dispatch(event: str, data: object, ctx: CommandContext) -> object:
+    """Parse `event` and emit the matching socket payload."""
+    parsed = parse_command(event, data)
+    if isinstance(parsed, str):
+        ctx.emit("error", {"message": parsed})
+        return None
+    return _apply(parsed, ctx)
+
+
+def _apply(cmd: Command, ctx: CommandContext) -> object:
+    if isinstance(cmd, Connect):
+        return _connect_allowed(cmd.auth, ctx.token)
+    if isinstance(cmd, Stop):
+        ctx.app.config["RUNNING"] = False
+        return None
+    session = ctx.app.scan_session
+    if session is None:
+        ctx.emit("error", {"message": "no device"})
+        return None
+    if isinstance(cmd, Start):
+        if ctx.app.config["RUNNING"]:
+            return None
+        ctx.app.config["RUNNING"] = True
+        ctx.socketio.start_background_task(_sweep_loop, ctx)
+        return None
+    if isinstance(cmd, SetRegion):
+        session.set_region(cmd.region)
+        ctx.emit("region", {"region": session.region})
+        return None
+    if isinstance(cmd, CaptureBaseline):
+        try:
+            count = session.capture_baseline(cycles=cmd.cycles)
+        except Exception as exc:  # noqa: BLE001 - device failure is an error event
+            ctx.emit("error", {"message": f"baseline failed: {exc}"})
+            return None
+        ctx.emit("baseline_ready", {"sweep_count": count})
+        return None
+    if isinstance(cmd, Investigate):
+        try:
+            payload = session.investigate(cmd.freq_hz, **_audio_kwargs(ctx.app))
+        except KeyError:
+            ctx.emit("error", {"message": "no current suspect at that frequency"})
+            return None
+        except Exception as exc:  # noqa: BLE001 - device/audio failure is an error event
+            ctx.emit("error", {"message": f"investigate failed: {exc}"})
+            return None
+        ctx.emit("finding", payload)
+        return None
+    assert_never(cmd)
+
+
+def _sweep_loop(ctx: CommandContext) -> None:
+    from quietroom.web.app import safe_tick
+
+    while ctx.app.config["RUNNING"]:
+        if not safe_tick(ctx.app.scan_session, ctx.socketio.emit):
+            ctx.app.config["RUNNING"] = False
+            break
+        ctx.socketio.sleep(0.5)
+
+
+def _audio_kwargs(app: Any) -> dict:
+    if app.config.get("DEMO"):
+        return {"play_record": lambda sig, fs: sig.astype(float)}
+    return {}
+
+
+def _connect_allowed(auth: object, token: str | None) -> bool:
+    if token is None:
+        return True
+    given = auth.get("token") if isinstance(auth, dict) else None
+    if given and hmac.compare_digest(str(given).encode(), token.encode()):
+        return True
+    from flask import request
+
+    from quietroom.web.app import TOKEN_COOKIE
+
+    cookie = request.args.get("token") or request.cookies.get(TOKEN_COOKIE) or ""
+    return hmac.compare_digest(str(cookie).encode(), token.encode())
+
+
+def _whole_number(raw: object) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float) and raw.is_integer():
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _frequency(raw: object) -> float | str:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return "invalid frequency"
+    try:
+        freq = float(raw)
+    except ValueError:
+        return "invalid frequency"
+    if not MIN_HZ <= freq <= MAX_HZ:
+        return "frequency out of range"
+    return freq
