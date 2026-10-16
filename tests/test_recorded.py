@@ -1,5 +1,6 @@
 import numpy as np
 
+from quietroom.engine.plan import SweepPlan
 from quietroom.radio.recorded import RecordedDevice, demo_device
 from quietroom.engine.spectrum import PowerSpectrum
 from quietroom.engine.baseline import build_baseline
@@ -24,8 +25,11 @@ def test_recorded_device_cycles_sweeps():
 
 def test_demo_device_has_a_plantable_bug():
     dev = demo_device()
-    baseline = build_baseline(list(dev.sweep(0, 1, 1, cycles=3)))
-    live = next(iter(dev.live_sweep()))
-    findings = sweep_findings(live, baseline)
+    plan = SweepPlan.search()
+    baseline = build_baseline(list(dev.sweep(
+        plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=3,
+    )))
+    live = next(iter(dev.live_sweep(plan.start_hz, plan.stop_hz, plan.bin_hz)))
+    findings = sweep_findings(live, baseline, plan)
     assert findings
     assert findings[0].score > 50.0

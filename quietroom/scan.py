@@ -12,6 +12,7 @@ from quietroom.engine.detectors.catalog import score_band
 from quietroom.engine.detectors.signatures import score_signatures
 from quietroom.engine.persistence import confirm_findings
 from quietroom.engine.pipeline import sweep_findings
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.score import score_candidate
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device
@@ -32,10 +33,8 @@ def capture_baseline(
 def live_findings(
     device: Device,
     baseline: Baseline,
+    plan: SweepPlan,
     live: Iterator[PowerSpectrum] | None = None,
-    f_start_hz: int = 0,
-    f_stop_hz: int = 0,
-    bin_hz: int = 0,
     bands: list[Band] = BANDS,
     k: float = 4.0,
 ) -> list[Finding]:
@@ -47,8 +46,10 @@ def live_findings(
     if live is not None:
         spectrum = next(iter(live))
     else:
-        spectrum = next(iter(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=1)))
-    return sweep_findings(spectrum, baseline, k=k, bands=bands)
+        spectrum = next(iter(device.sweep(
+            plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=1,
+        )))
+    return sweep_findings(spectrum, baseline, plan, k=k, bands=bands)
 
 
 def confirmed_findings(
@@ -56,9 +57,7 @@ def confirmed_findings(
     baseline: Baseline,
     n_sweeps: int,
     min_hits: int,
-    f_start_hz: int = 0,
-    f_stop_hz: int = 0,
-    bin_hz: int = 0,
+    plan: SweepPlan,
     live: Iterator[PowerSpectrum] | None = None,
     bands: list[Band] = BANDS,
     k: float = 4.0,
@@ -67,8 +66,10 @@ def confirmed_findings(
     if live is not None:
         spectra = list(itertools.islice(live, n_sweeps))
     else:
-        spectra = list(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=n_sweeps))
-    batches = [sweep_findings(s, baseline, k=k, bands=bands) for s in spectra]
+        spectra = list(device.sweep(
+            plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=n_sweeps,
+        ))
+    batches = [sweep_findings(s, baseline, plan, k=k, bands=bands) for s in spectra]
     return confirm_findings(batches, min_hits=min(min_hits, len(batches)))
 
 

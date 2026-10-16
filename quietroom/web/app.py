@@ -11,6 +11,7 @@ from flask import Flask, abort, render_template, request
 from flask_socketio import SocketIO
 
 from quietroom.bands import REGIONS
+from quietroom.radio.hackrf import MAX_HZ, MIN_HZ
 from quietroom.radio.recorded import streaming_demo_device
 from quietroom.web.session import ScanSession
 
@@ -109,8 +110,6 @@ def create_app(
         )
 
     from flask_socketio import emit
-
-    MIN_HZ, MAX_HZ = 1_000_000, 6_000_000_000
 
     def _audio_kwargs():
         # In demo mode, run the real DSP with a loopback "mic" against the

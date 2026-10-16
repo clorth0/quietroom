@@ -55,44 +55,70 @@ def synthetic_bug_iq(
     return (bug + spike).astype(np.complex64)
 
 
-def _flat(power_dbm: float, timestamp: float) -> PowerSpectrum:
-    freqs = np.arange(300e6, 300e6 + 1e6 * 20, 1e6)
-    return PowerSpectrum(freqs, np.full(20, power_dbm, dtype=float), timestamp)
+DEMO_FLOOR_DBM = -95.0
+DEMO_BUG_DBM = -30.0
+
+
+def spectrum_grid(
+    start_hz: int,
+    stop_hz: int,
+    bin_hz: int,
+    power_dbm: float,
+    timestamp: float,
+    bug_hz: int | None = None,
+) -> PowerSpectrum:
+    """A uniform grid from start to stop at bin_hz. One bin can hold the demo bug."""
+    if bin_hz <= 0 or stop_hz <= start_hz:
+        raise ValueError("need a positive bin and a stop above the start")
+    freqs = np.arange(float(start_hz), float(stop_hz), float(bin_hz))
+    if len(freqs) < 2:
+        raise ValueError("sweep span must cover at least two bins")
+    powers = np.full(len(freqs), power_dbm, dtype=float)
+    if bug_hz is not None:
+        idx = int(round((float(bug_hz) - float(start_hz)) / float(bin_hz)))
+        if not 0 <= idx < len(powers):
+            raise ValueError(f"bug at {bug_hz} Hz is outside {start_hz}-{stop_hz} Hz")
+        powers[idx] = DEMO_BUG_DBM
+    return PowerSpectrum(freqs, powers, timestamp)
 
 
 def demo_device() -> DemoDevice:
     return DemoDevice()
 
 
-class DemoDevice(RecordedDevice):
-    """RecordedDevice with a clean baseline and a separate planted-bug live sweep."""
+class DemoDevice(Device):
+    """Clean baseline sweeps plus a separate planted-bug live sweep, both on the requested grid."""
 
-    def __init__(self) -> None:
-        baseline_sweeps = [_flat(-95.0, t) for t in (1.0, 2.0, 3.0)]
-        super().__init__(sweeps=baseline_sweeps, iq=np.zeros(8, dtype=np.complex64))
-        live = _flat(-95.0, 10.0)
-        live.power_dbm[8] = -30.0  # strong narrowband carrier at 308 MHz (covert band)
-        self._live = live
+    def probe(self) -> DeviceInfo:
+        return DeviceInfo(serial="demo", board="DemoDevice", firmware="n/a")
+
+    def sweep(
+        self, f_start_hz: int, f_stop_hz: int, bin_hz: int, cycles: int = 1
+    ) -> Iterator[PowerSpectrum]:
+        for i in range(cycles):
+            yield spectrum_grid(
+                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM, float(i + 1)
+            )
+
+    def live_sweep(
+        self, f_start_hz: int, f_stop_hz: int, bin_hz: int
+    ) -> Iterator[PowerSpectrum]:
+        """Endless planted-bug sweeps on the same grid as `sweep`."""
+        while True:
+            yield spectrum_grid(
+                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM, 10.0, bug_hz=DEMO_BUG_HZ
+            )
 
     def capture_iq(self, center_hz, sample_rate, n_samples):
         return synthetic_bug_iq(center_hz, sample_rate, n_samples)
 
-    def live_sweep(self) -> Iterator[PowerSpectrum]:
-        """Endless planted-bug sweeps (the bug is a steady carrier)."""
-        while True:
-            yield self._live
-
 
 class StreamingDemoDevice(Device):
-    """Serves `n_clean` clean sweeps, then planted-bug sweeps, advancing a cursor."""
+    """Serves `n_clean` clean sweeps, then planted-bug sweeps, on the requested grid."""
 
     def __init__(self, n_clean: int = 3) -> None:
         self._n_clean = n_clean
         self._served = 0
-        self._clean = _flat(-95.0, 0.0)
-        bug = _flat(-95.0, 0.0)
-        bug.power_dbm[8] = -30.0          # strong carrier at 308 MHz (covert band)
-        self._bug = bug
 
     def probe(self) -> DeviceInfo:
         return DeviceInfo(serial="demo", board="StreamingDemoDevice", firmware="n/a")
@@ -101,8 +127,11 @@ class StreamingDemoDevice(Device):
         for _ in range(cycles):
             clean = self._served < self._n_clean
             self._served += 1
-            src = self._clean if clean else self._bug
-            yield PowerSpectrum(src.freqs_hz, src.power_dbm.copy(), float(self._served))
+            bug = None if clean else DEMO_BUG_HZ
+            yield spectrum_grid(
+                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM,
+                float(self._served), bug_hz=bug,
+            )
 
     def capture_iq(self, center_hz, sample_rate, n_samples):
         return synthetic_bug_iq(center_hz, sample_rate, n_samples)

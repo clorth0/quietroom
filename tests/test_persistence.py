@@ -1,15 +1,13 @@
 from quietroom.engine.persistence import PersistenceTracker, confirm_findings
+from quietroom.engine.score import unsquash
 from quietroom.engine.spectrum import Candidate, Finding
 
 
 def _f(freq, score=50.0, bin_hz=10e3):
     c = Candidate(center_freq_hz=freq, bandwidth_hz=bin_hz, peak_power_dbm=-60.0,
-                  snr_over_baseline_db=20.0, bin_hz=bin_hz, n_bins=1) \
-        if "bin_hz" in Candidate.__dataclass_fields__ else \
-        Candidate(center_freq_hz=freq, bandwidth_hz=bin_hz, peak_power_dbm=-60.0,
-                  snr_over_baseline_db=20.0)
+                  snr_over_baseline_db=20.0, bin_hz=bin_hz, n_bins=1)
     return Finding(candidate=c, score=score, band_label="unknown",
-                   reasons=["x"], breakdown={"snr": 20.0})
+                   raw_score=unsquash(score), reasons=["x"], breakdown={"snr": 20.0})
 
 
 def test_first_sighting_is_marked_unconfirmed_without_bonus():

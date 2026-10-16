@@ -68,8 +68,8 @@ Example (demo) output:
 
 ```
 SCORE    FREQ (MHz)  BAND                      REASONS
-   84       308.000  unknown                   not in any known band, unresolved single-bin signal (<= 1000 kHz); rescan with a finer --bin to confirm narrowband, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
-                                               score: snr=+20 catalog=+30 signatures=+42 persistence=+10 (raw 102)
+   86       308.000  unknown                   not in any known band, narrowband carrier, near-field strong signal, in common analog bug band, persistent: seen in 3/3 sweeps
+                                               score: snr=+20 catalog=+30 signatures=+50 persistence=+10 (raw 110)
 ```
 
 Run `uv run quietroom --help` for every option.

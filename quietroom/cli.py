@@ -8,10 +8,10 @@ from collections.abc import Sequence
 from quietroom.bands import REGIONS, bands_for
 from quietroom.audio.capture import audio_correlation_test
 from quietroom.engine.detectors.audio_corr import AUDIO_CORR_THRESHOLD
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import Finding
 from quietroom.radio.device import Device
 from quietroom.radio.hackrf import (
-    DEFAULT_BIN_HZ,
     DEFAULT_LNA,
     DEFAULT_VGA,
     HackRFDevice,
@@ -37,8 +37,7 @@ def parse_freq(text: str) -> int:
 
 def format_breakdown(f: Finding) -> str:
     parts = " ".join(f"{k}={v:+.0f}" for k, v in f.breakdown.items())
-    if f.raw_score is not None:
-        parts += f" (raw {f.raw_score:.0f})"
+    parts += f" (raw {f.raw_score:.0f})"
     return parts
 
 
@@ -74,13 +73,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--demo", action="store_true",
                         help="run with no hardware using a synthetic planted bug")
-    parser.add_argument("--start", type=parse_freq, default=300_000_000,
+    default_plan = SweepPlan.search()
+    parser.add_argument("--start", type=parse_freq, default=default_plan.start_hz,
                         help="sweep start frequency (default 300M)")
-    parser.add_argument("--stop", type=parse_freq, default=320_000_000,
+    parser.add_argument("--stop", type=parse_freq, default=default_plan.stop_hz,
                         help="sweep stop frequency (default 320M)")
-    parser.add_argument("--bin", type=parse_freq, default=DEFAULT_BIN_HZ,
+    parser.add_argument("--bin", type=parse_freq, default=default_plan.bin_hz,
                         help="sweep bin width (default 25k; 2445 Hz-5M). Use a "
-                             "coarser bin (e.g. 1M) for multi-GHz spans")
+                             "coarser bin (e.g. 1M) with --overview for multi-GHz spans")
+    parser.add_argument("--overview", action="store_true",
+                        help="allow a bin wider than the narrowband threshold")
     parser.add_argument("--baseline-cycles", type=int, default=5,
                         help="number of sweeps to average into the baseline")
     parser.add_argument("--investigate", type=parse_freq, default=None,
@@ -112,6 +114,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(e))
     if args.k <= 0:
         parser.error("-k must be positive")
+    try:
+        plan = (SweepPlan.overview if args.overview else SweepPlan.search)(
+            args.start, args.stop, args.bin,
+        )
+    except ValueError as e:
+        parser.error(str(e))
 
     if args.investigate is not None:
         if args.demo:
@@ -133,10 +141,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.demo:
         demo = demo_device()
-        baseline = capture_baseline(demo, args.start, args.stop, args.bin,
+        baseline = capture_baseline(demo, plan.start_hz, plan.stop_hz, plan.bin_hz,
                                     cycles=3)
-        findings = confirmed_findings(demo, baseline, args.live_sweeps, args.min_hits,
-                                      live=demo.live_sweep(), bands=bands, k=args.k)
+        findings = confirmed_findings(
+            demo, baseline, args.live_sweeps, args.min_hits, plan,
+            live=demo.live_sweep(plan.start_hz, plan.stop_hz, plan.bin_hz),
+            bands=bands, k=args.k,
+        )
         print(format_findings(findings, verbose=args.verbose))
         return 0
 
@@ -145,12 +156,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("HackRF not detected. Connect it, or use --demo.")
         return 1
     print("Capturing baseline; keep the area quiet...")
-    baseline = capture_baseline(dev, args.start, args.stop, args.bin,
+    baseline = capture_baseline(dev, plan.start_hz, plan.stop_hz, plan.bin_hz,
                                 cycles=args.baseline_cycles)
     print("Sweeping for suspicious emitters...")
-    findings = confirmed_findings(dev, baseline, args.live_sweeps, args.min_hits,
-                                  f_start_hz=args.start, f_stop_hz=args.stop,
-                                  bin_hz=args.bin, bands=bands, k=args.k)
+    findings = confirmed_findings(
+        dev, baseline, args.live_sweeps, args.min_hits, plan,
+        bands=bands, k=args.k,
+    )
     print(format_findings(findings, verbose=args.verbose))
     return 0
 

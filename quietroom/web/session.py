@@ -6,9 +6,9 @@ import threading
 from quietroom.engine.persistence import PersistenceTracker
 from quietroom.bands import bands_for, label_for
 from quietroom.engine.pipeline import sweep_findings
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device
-from quietroom.radio.hackrf import DEFAULT_BIN_HZ
 from quietroom.scan import capture_baseline as _capture_baseline
 from quietroom.scan import investigate as _investigate
 
@@ -26,7 +26,7 @@ def finding_payload(f: Finding) -> dict:
         "freq_hz": float(f.candidate.center_freq_hz),
         "freq_mhz": round(f.candidate.center_freq_hz / 1e6, 3),
         "score": round(f.score, 1),
-        "raw_score": None if f.raw_score is None else round(f.raw_score, 1),
+        "raw_score": round(f.raw_score, 1),
         "band": f.band_label,
         "reasons": list(f.reasons),
     }
@@ -36,15 +36,23 @@ class ScanSession:
     def __init__(
         self,
         device: Device,
-        f_start_hz: int = 300_000_000,
-        f_stop_hz: int = 320_000_000,
-        bin_hz: int = DEFAULT_BIN_HZ,
+        f_start_hz: int | None = None,
+        f_stop_hz: int | None = None,
+        bin_hz: int | None = None,
         region: str = "us",
+        overview: bool = False,
     ) -> None:
+        defaults = SweepPlan.search()
+        start = defaults.start_hz if f_start_hz is None else f_start_hz
+        stop = defaults.stop_hz if f_stop_hz is None else f_stop_hz
+        width = defaults.bin_hz if bin_hz is None else bin_hz
+        self.plan = (SweepPlan.overview if overview else SweepPlan.search)(
+            start, stop, width,
+        )
         self.device = device
-        self.f_start_hz = f_start_hz
-        self.f_stop_hz = f_stop_hz
-        self.bin_hz = bin_hz
+        self.f_start_hz = self.plan.start_hz
+        self.f_stop_hz = self.plan.stop_hz
+        self.bin_hz = self.plan.bin_hz
         self.set_region(region)
         self.baseline: Baseline | None = None
         self._last: dict[float, Finding] = {}
@@ -77,7 +85,8 @@ class ScanSession:
         with self._lock:
             baseline = self.baseline
         findings: list[Finding] = (
-            sweep_findings(spectrum, baseline, bands=self.bands) if baseline is not None else []
+            sweep_findings(spectrum, baseline, self.plan, bands=self.bands)
+            if baseline is not None else []
         )
         with self._lock:
             if baseline is not None:

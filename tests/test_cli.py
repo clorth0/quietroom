@@ -8,6 +8,7 @@ def test_format_findings_renders_table():
         score=92.0,
         band_label="unknown",
         reasons=["not in any known band", "narrowband carrier"],
+        raw_score=120.0,
         breakdown={},
     )
     out = format_findings([f])
@@ -28,14 +29,17 @@ def test_main_demo_prints_a_finding(capsys):
     assert "308.000" in captured.out   # the demo planted bug at 308 MHz
 
 
-def test_demo_flags_unresolved_single_bin():
+def test_demo_flags_narrowband_carrier():
     import contextlib
     import io
     from quietroom.cli import main
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         assert main(["--demo"]) == 0
-    assert "unresolved single-bin" in buf.getvalue()
+    out = buf.getvalue()
+    assert "narrowband carrier" in out
+    assert "308.000" in out
+    assert "86" in out.splitlines()[1]
 
 
 def test_region_flag_accepts_eu():
@@ -64,10 +68,17 @@ def test_min_hits_cannot_exceed_live_sweeps():
 
 
 def test_cli_accepts_mhz_and_gain_flags(capsys, monkeypatch):
-    rc = main(["--demo", "--start", "300M", "--stop", "320M", "--bin", "1M",
+    rc = main(["--demo", "--start", "300M", "--stop", "320M", "--bin", "25k",
                "-k", "5", "--lna", "24", "--vga", "30"])
     assert rc == 0
     assert "308.000" in capsys.readouterr().out
+
+
+def test_coarse_bin_requires_overview():
+    import pytest
+    with pytest.raises(SystemExit):
+        main(["--demo", "--bin", "1M"])
+    assert main(["--demo", "--overview", "--bin", "1M"]) == 0
 
 
 def test_cli_rejects_invalid_gain():
@@ -122,7 +133,7 @@ def test_default_bin_resolves_narrowband_carriers(monkeypatch):
 
 
 def test_web_session_default_bin_matches_cli():
+    from quietroom.engine.plan import SweepPlan
     from quietroom.radio.recorded import streaming_demo_device
     from quietroom.web.session import ScanSession
-    from quietroom.cli import DEFAULT_BIN_HZ
-    assert ScanSession(streaming_demo_device()).bin_hz == DEFAULT_BIN_HZ
+    assert ScanSession(streaming_demo_device()).bin_hz == SweepPlan.search().bin_hz
