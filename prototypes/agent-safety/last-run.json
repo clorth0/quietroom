@@ -1,0 +1,217 @@
+{
+  "false_clean": {
+    "empty_iq_correlation": 0.0,
+    "empty_iq_verdict": "308.000 MHz: no audio correlation (0.00); not a detectable live audio bug",
+    "short_iq_correlation": 0.0,
+    "short_iq_verdict": "308.000 MHz: no audio correlation (0.00); not a detectable live audio bug",
+    "dead_process_raised": false,
+    "dead_process_raise_type": null,
+    "dead_process_sample_count": 0,
+    "clean_phrase": "not a detectable live audio bug"
+  },
+  "verdict_shape": {
+    "empty_result": "capture has 0 samples, expected 1000. An empty capture is not a correlation.",
+    "short_result": "capture has 8 samples, expected 1000. An empty capture is not a correlation.",
+    "full_result": "NoAudioMatch",
+    "float_zero_still_prints_clean": true
+  },
+  "policy": {
+    "demo_requested_bin_hz": 25000,
+    "demo_actual_bin_hz": 1000000.0,
+    "old_default_bin_1mhz_search": "rejected: search bin 1000000 Hz is wider than the narrowband threshold 50000.0 Hz. Pass mode='overview', or pick a finer bin.",
+    "current_default_bin_25khz_search": "accepted",
+    "overview_bin_1mhz": "accepted",
+    "duplicated_literals_at_head": [
+      {
+        "value": 1000000,
+        "places": [
+          "quietroom/radio/hackrf.py:MIN_HZ",
+          "quietroom/web/app.py:MIN_HZ"
+        ]
+      },
+      {
+        "value": 300000000,
+        "places": [
+          "quietroom/cli.py:start",
+          "quietroom/web/session.py:__init__.f_start_hz"
+        ]
+      },
+      {
+        "value": 320000000,
+        "places": [
+          "quietroom/cli.py:stop",
+          "quietroom/web/session.py:__init__.f_stop_hz"
+        ]
+      },
+      {
+        "value": 6000000000,
+        "places": [
+          "quietroom/radio/hackrf.py:MAX_HZ",
+          "quietroom/web/app.py:MAX_HZ"
+        ]
+      }
+    ],
+    "duplicated_literals_before_47fde9b": [
+      {
+        "value": 1000000,
+        "places": [
+          "quietroom/cli.py:bin",
+          "quietroom/web/session.py:__init__.bin_hz",
+          "quietroom/radio/hackrf.py:MIN_HZ"
+        ]
+      },
+      {
+        "value": 300000000,
+        "places": [
+          "quietroom/cli.py:start",
+          "quietroom/web/session.py:__init__.f_start_hz"
+        ]
+      },
+      {
+        "value": 320000000,
+        "places": [
+          "quietroom/cli.py:stop",
+          "quietroom/web/session.py:__init__.f_stop_hz"
+        ]
+      }
+    ]
+  },
+  "score_holes": {
+    "forgotten_raw_annotated_raw": 112.00000000000003,
+    "forgotten_raw_true_raw_plus_bonus": 112.0,
+    "forgotten_raw_delta": 2.842170943040401e-14,
+    "pinned_100_annotated_raw": 1023.1374412516411,
+    "pinned_100_annotated_score": 99.9999991662471,
+    "short_sweep_still_reports": 1,
+    "short_sweep_min_hits_requested": 2
+  },
+  "boundaries": {
+    "handlers_at_head": [
+      {
+        "event": "connect",
+        "function": "_on_connect",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Assign",
+          "If",
+          "return"
+        ]
+      },
+      {
+        "event": "set_region",
+        "function": "_on_set_region",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Try",
+          "emit"
+        ]
+      },
+      {
+        "event": "capture_baseline",
+        "function": "_on_capture_baseline",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Try",
+          "Try",
+          "emit"
+        ]
+      },
+      {
+        "event": "investigate",
+        "function": "_on_investigate",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Try",
+          "If",
+          "Try",
+          "emit"
+        ]
+      },
+      {
+        "event": "start",
+        "function": "_on_start",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Assign",
+          "call"
+        ]
+      },
+      {
+        "event": "stop",
+        "function": "_on_stop",
+        "delegates_to_dispatch": false,
+        "body": [
+          "Assign"
+        ]
+      }
+    ],
+    "handlers_before_2c4e21e": [
+      {
+        "event": "connect",
+        "function": "_on_connect",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Assign",
+          "If",
+          "return"
+        ]
+      },
+      {
+        "event": "capture_baseline",
+        "function": "_on_capture_baseline",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Try",
+          "Assign",
+          "emit"
+        ]
+      },
+      {
+        "event": "investigate",
+        "function": "_on_investigate",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Try",
+          "If",
+          "Try",
+          "emit"
+        ]
+      },
+      {
+        "event": "start",
+        "function": "_on_start",
+        "delegates_to_dispatch": false,
+        "body": [
+          "If",
+          "Assign",
+          "call"
+        ]
+      },
+      {
+        "event": "stop",
+        "function": "_on_stop",
+        "delegates_to_dispatch": false,
+        "body": [
+          "Assign"
+        ]
+      }
+    ],
+    "cors_at_head": [
+      "name:_origin_ok"
+    ],
+    "cors_before_bfacdd3": [
+      "list"
+    ],
+    "engineio_empty_list_disables_check": true,
+    "engineio_file": ".venv/lib/python3.12/site-packages/engineio/server.py",
+    "engineio_line": 202
+  }
+}
