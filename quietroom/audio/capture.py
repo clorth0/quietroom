@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -13,7 +14,9 @@ from quietroom.audio.signal import (
     make_chirp,
     resample_to,
 )
-from quietroom.radio.device import Device
+from quietroom.engine.detectors.audio_corr import AUDIO_CORR_THRESHOLD
+from quietroom.radio.capture import IqCapture
+from quietroom.radio.device import Device, DeviceError
 
 DEFAULT_AUDIO_FS = 48_000
 DEFAULT_DURATION_S = 1.0
@@ -46,6 +49,30 @@ def play_and_record(signal: np.ndarray, fs: int) -> np.ndarray:
     return np.asarray(rec).reshape(-1).astype(float)
 
 
+@dataclass(frozen=True)
+class LiveBug:
+    """The RF envelope moves with the room audio."""
+
+    correlation: float
+
+
+@dataclass(frozen=True)
+class NoAudioMatch:
+    """The capture completed and the envelope does not match the room."""
+
+    correlation: float
+
+
+@dataclass(frozen=True)
+class CaptureFailed:
+    """The radio did not return the IQ that was asked for."""
+
+    reason: str
+
+
+AudioVerdict = LiveBug | NoAudioMatch | CaptureFailed
+
+
 def audio_correlation_test(
     device: Device,
     center_hz: int,
@@ -54,11 +81,12 @@ def audio_correlation_test(
     duration_s: float = DEFAULT_DURATION_S,
     audio_fs: int = DEFAULT_AUDIO_FS,
     play_record=play_and_record,
-) -> float:
-    """Play a chirp, capture IQ at center_hz concurrently, return 0..1 correlation.
+) -> AudioVerdict:
+    """Play a chirp, capture IQ at center_hz concurrently, and return a verdict.
 
     Correlates the RF envelope (best of AM/FM) against the recorded room audio,
-    tolerant to playback/capture latency.
+    tolerant to playback/capture latency. A failed or short capture is
+    CaptureFailed, never a low correlation.
     """
     chirp = make_chirp(duration_s, audio_fs)
     n_iq = int(sample_rate * duration_s)
@@ -66,23 +94,28 @@ def audio_correlation_test(
     offset_hz = int(sample_rate * IQ_OFFSET_FRACTION)
     channel_bw = min(CHANNEL_BW_HZ, offset_hz)   # keep the DC spike out of band
     captured: dict[str, np.ndarray] = {}
-    failure: list[BaseException] = []
+    failure: list[Exception] = []
 
     def _capture() -> None:
         try:
             captured["iq"] = device.capture_iq(int(center_hz) + offset_hz, sample_rate, n_iq)
-        except BaseException as e:  # noqa: BLE001 - re-raised on the caller's thread
+        except Exception as e:  # noqa: BLE001 - reported as CaptureFailed
             failure.append(e)
 
     thread = threading.Thread(target=_capture)
     thread.start()
-    mic = play_record(chirp, audio_fs)          # blocks ~duration_s, runs with capture
-    thread.join()
+    try:
+        mic = play_record(chirp, audio_fs)      # blocks ~duration_s, runs with capture
+    finally:
+        thread.join()
     if failure:
-        # Never turn a failed capture into "correlation 0" (a false all-clear).
-        raise failure[0]
+        return CaptureFailed(str(failure[0]))
 
     iq = captured.get("iq", np.zeros(0, dtype=np.complex64))
+    try:
+        iq = IqCapture(iq, n_iq).samples
+    except DeviceError as e:
+        return CaptureFailed(str(e))
 
     # Bring the recorded room audio and both RF envelopes to a common rate.
     ref = resample_to(mic, max(int(len(mic) * ENVELOPE_FS / audio_fs), 1))
@@ -90,8 +123,10 @@ def audio_correlation_test(
     am = iq_to_am_envelope(ch, ch_fs, ENVELOPE_FS)
     fm = iq_to_fm_envelope(ch, ch_fs, ENVELOPE_FS)
     max_lag = int(MAX_LAG_S * ENVELOPE_FS)
-
-    return max(
+    correlation = max(
         best_lag_correlation(am, ref, max_lag),
         best_lag_correlation(fm, ref, max_lag),
     )
+    if correlation >= AUDIO_CORR_THRESHOLD:
+        return LiveBug(correlation)
+    return NoAudioMatch(correlation)

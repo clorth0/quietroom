@@ -11,6 +11,7 @@ from collections.abc import Iterator
 import numpy as np
 
 from quietroom.engine.spectrum import PowerSpectrum
+from quietroom.radio.capture import require_iq
 from quietroom.radio.device import Device, DeviceError, DeviceInfo
 from quietroom.radio.parse import (
     SweepAccumulator,
@@ -212,9 +213,14 @@ class HackRFDevice(Device):
         cmd = build_iq_cmd(
             center_hz, sample_rate, n_samples, self.lna_gain, self.vga_gain, self.amp
         )
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+        except FileNotFoundError as e:
+            raise DeviceError(
+                f"{cmd[0]} not found; install hackrf tools (hackrf_transfer)"
+            ) from e
         if proc.stdout is None:  # pragma: no cover - defensive
             raise DeviceError("hackrf_transfer produced no stdout")
         want_bytes = n_samples * 2
@@ -226,4 +232,14 @@ class HackRFDevice(Device):
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        return iq_cs8_to_complex(raw)
+                proc.wait(timeout=2.0)
+        samples = iq_cs8_to_complex(raw)
+        code = proc.returncode
+        # terminate() after a full read exits on a signal. A full buffer is the
+        # capture. A short buffer is a dead process, and the exit code says why.
+        if len(samples) != n_samples:
+            raise DeviceError(
+                f"hackrf_transfer returned {len(samples)} of {n_samples} "
+                f"IQ samples (exit {code})"
+            )
+        return require_iq(samples, n_samples)
