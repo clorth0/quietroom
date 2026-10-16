@@ -1,8 +1,11 @@
 import numpy as np
 
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import PowerSpectrum
 from quietroom.engine.baseline import build_baseline
 from quietroom.engine.pipeline import sweep_findings
+
+_PLAN = SweepPlan.search(300_000_000, 300_200_000, 10_000)
 
 
 def _flat(power_dbm, t=0.0):
@@ -17,7 +20,7 @@ def _flat(power_dbm, t=0.0):
 def test_clean_room_returns_no_findings():
     base = build_baseline([_flat(-95), _flat(-95), _flat(-95)])
     live = _flat(-95)
-    assert sweep_findings(live, base) == []
+    assert sweep_findings(live, base, _PLAN) == []
 
 
 def test_planted_bug_surfaces_as_top_finding():
@@ -25,7 +28,7 @@ def test_planted_bug_surfaces_as_top_finding():
     live = _flat(-95)
     # Plant a strong narrowband carrier at an uncatalogued, covert-band freq.
     live.power_dbm[8] = -30.0  # bin 8 => 300e6 + 8*10e3 = 300.08 MHz
-    findings = sweep_findings(live, base)
+    findings = sweep_findings(live, base, _PLAN)
     assert len(findings) >= 1
     top = findings[0]
     assert top.score > 50.0
@@ -38,6 +41,6 @@ def test_findings_sorted_by_score_descending():
     live = _flat(-95)
     live.power_dbm[3] = -35.0
     live.power_dbm[15] = -80.0  # weaker excess
-    findings = sweep_findings(live, base)
+    findings = sweep_findings(live, base, _PLAN)
     scores = [f.score for f in findings]
     assert scores == sorted(scores, reverse=True)

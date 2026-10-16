@@ -25,6 +25,7 @@ def test_candidate_and_finding_compose():
         candidate=cand,
         score=72.0,
         band_label="unknown",
+        raw_score=80.0,
         reasons=["narrowband carrier"],
         breakdown={"signatures": 15.0},
     )

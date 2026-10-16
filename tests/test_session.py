@@ -4,7 +4,8 @@ from quietroom.web.session import ScanSession
 
 def test_baseline_then_sweep_finds_bug():
     s = ScanSession(streaming_demo_device(n_clean=3),
-                    f_start_hz=300_000_000, f_stop_hz=320_000_000, bin_hz=1_000_000)
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000,
+                    bin_hz=1_000_000, overview=True)
     assert s.capture_baseline(cycles=3) == 3
     spectrum, findings = s.sweep_once()
     assert "powers" in spectrum and spectrum["f0"] < spectrum["f1"]
@@ -20,7 +21,8 @@ def test_sweep_without_baseline_returns_empty_findings():
 
 def test_investigate_uses_last_findings_and_audio_test():
     s = ScanSession(streaming_demo_device(n_clean=3),
-                    f_start_hz=300_000_000, f_stop_hz=320_000_000, bin_hz=1_000_000)
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000,
+                    bin_hz=1_000_000, overview=True)
     s.capture_baseline(cycles=3)
     s.sweep_once()
     payload = s.investigate(308_000_000.0, audio_test=lambda *a, **k: 0.9)
@@ -41,7 +43,8 @@ def test_investigate_unknown_frequency_raises():
 
 def test_repeated_sweeps_confirm_the_bug():
     s = ScanSession(streaming_demo_device(n_clean=3),
-                    f_start_hz=300_000_000, f_stop_hz=320_000_000, bin_hz=1_000_000)
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000,
+                    bin_hz=1_000_000, overview=True)
     s.capture_baseline(cycles=3)
     _, first = s.sweep_once()
     _, second = s.sweep_once()
