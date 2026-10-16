@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import argparse
 import hmac
-import ipaddress
 import os
-from urllib.parse import urlsplit
 
 from flask import Flask, abort, render_template, request
 from flask_socketio import SocketIO
 
 from quietroom.bands import REGIONS
 from quietroom.radio.recorded import streaming_demo_device
+from quietroom.web.bind import Bind, LocalBind, origin_checker, resolve_bind
 from quietroom.web.commands import CommandContext, dispatch
 from quietroom.web.session import ScanSession
 
@@ -35,36 +34,23 @@ def safe_tick(session, emit_fn) -> bool:
     return True
 
 
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 TOKEN_COOKIE = "quietroom_token"
-
-
-def is_loopback(host: str) -> bool:
-    if host in LOOPBACK_HOSTS:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def create_app(
     device=None,
     demo: bool = False,
-    token: str | None = None,
-    extra_hosts: frozenset[str] = frozenset(),
+    bind: Bind | None = None,
     region: str = "us",
 ) -> tuple[Flask, SocketIO]:
-    allowed_hosts = LOOPBACK_HOSTS | set(extra_hosts)
-
-    def _origin_ok(origin, environ=None) -> bool:
-        # Only pages served by this UI may open the socket. (Passing [] here,
-        # as before, disables engineio's origin check entirely: any website
-        # could drive the sweep and the speaker.)
-        return (urlsplit(origin).hostname or "") in allowed_hosts
+    if bind is None:
+        bind = LocalBind()
+    allowed_hosts = bind.allowed_hosts
+    token = bind.token
+    origin_ok = origin_checker(bind)
 
     app = Flask(__name__)
-    socketio = SocketIO(app, async_mode="threading", cors_allowed_origins=_origin_ok)
+    socketio = SocketIO(app, async_mode="threading", cors_allowed_origins=origin_ok)
 
     def _token_ok() -> bool:
         if token is None:
@@ -141,10 +127,11 @@ def create_app(
 
 
 def build_server(demo: bool = False, host: str = "127.0.0.1", port: int = 8770,
-                 token: str | None = None, region: str = "us"):
-    extra = frozenset() if is_loopback(host) else frozenset({host})
-    app, socketio = create_app(demo=demo, token=token, extra_hosts=extra, region=region)
-    app.config["HOST"] = host
+                 token: str | None = None, region: str = "us", bind: Bind | None = None):
+    if bind is None:
+        bind = resolve_bind(host, allow_remote=False, token=token)
+    app, socketio = create_app(demo=demo, bind=bind, region=region)
+    app.config["HOST"] = bind.host
     app.config["PORT"] = port
     return app, socketio
 
@@ -167,14 +154,12 @@ def main(argv=None) -> int:
                         help="permit a non-loopback --host; requires QUIETROOM_TOKEN")
     args = parser.parse_args(argv)
     token = os.environ.get("QUIETROOM_TOKEN") or None
-    if not is_loopback(args.host):
-        if not args.allow_remote:
-            parser.error(f"refusing to bind {args.host}: pass --allow-remote "
-                         "(prefer an SSH tunnel or Tailscale to 127.0.0.1)")
-        if not token or len(token) < 16:
-            parser.error("--allow-remote needs QUIETROOM_TOKEN set (16+ chars)")
-    app, socketio = build_server(demo=args.demo, host=args.host, port=args.port,
-                                 token=token, region=args.region)
+    try:
+        bind = resolve_bind(args.host, allow_remote=args.allow_remote, token=token)
+    except ValueError as exc:
+        parser.error(str(exc))
+    app, socketio = build_server(demo=args.demo, port=args.port, region=args.region,
+                                 bind=bind)
     url = f"http://{args.host}:{args.port}"
     print(f"Quietroom web UI on {url}{'/?token=<QUIETROOM_TOKEN>' if token else ''}"
           f"  (demo={args.demo})")
