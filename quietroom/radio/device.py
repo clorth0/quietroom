@@ -38,4 +38,8 @@ class Device(ABC):
     def capture_iq(
         self, center_hz: int, sample_rate: int, n_samples: int
     ) -> np.ndarray:
-        """Capture `n_samples` complex64 IQ samples at `center_hz`."""
+        """Capture exactly `n_samples` complex64 IQ samples at `center_hz`.
+
+        Return that array, or raise DeviceError. A short or empty array is a
+        failed capture, not a quiet room.
+        """

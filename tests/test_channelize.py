@@ -51,7 +51,7 @@ class _Recorder(Device):
         return np.zeros(n_samples, dtype=np.complex64)
 
 
-def test_audio_test_tunes_off_the_target_to_dodge_the_dc_spike():
+def test_correlation_tunes_off_the_target_to_dodge_the_dc_spike():
     dev = _Recorder()
     audio_correlation_test(dev, 308_000_000, sample_rate=FS, duration_s=0.05,
                            audio_fs=8_000, play_record=lambda s, fs: np.asarray(s, float))
@@ -59,9 +59,11 @@ def test_audio_test_tunes_off_the_target_to_dodge_the_dc_spike():
 
 
 def test_demo_device_runs_the_real_pipeline():
+    from quietroom.audio.capture import LiveBug
     from quietroom.radio.recorded import demo_device
-    corr = audio_correlation_test(
+    verdict = audio_correlation_test(
         demo_device(), 308_000_000, duration_s=0.25,
         play_record=lambda s, fs: np.asarray(s, float),
     )
-    assert corr > 0.8
+    assert isinstance(verdict, LiveBug)
+    assert verdict.correlation > 0.8

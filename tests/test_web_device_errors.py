@@ -48,11 +48,19 @@ def test_frontend_marks_errors_visibly():
 def test_iq_capture_failure_is_not_reported_as_clean():
     # A failed capture used to leave zeros -> correlation 0 -> "not a bug".
     import numpy as np
-    import pytest
-    from quietroom.audio.capture import audio_correlation_test
-    with pytest.raises(DeviceError):
-        audio_correlation_test(_BrokenRadio(), 308_000_000, duration_s=0.05,
-                               play_record=lambda s, fs: np.asarray(s, float))
+
+    from quietroom.audio.capture import CaptureFailed, audio_correlation_test
+    from quietroom.cli import format_verdict
+
+    verdict = audio_correlation_test(
+        _BrokenRadio(), 308_000_000, duration_s=0.05,
+        play_record=lambda s, fs: np.asarray(s, float),
+    )
+    assert isinstance(verdict, CaptureFailed)
+    text = format_verdict(308_000_000.0, verdict)
+    assert "capture failed" in text
+    assert "Resource busy" in text
+    assert "not a detectable live audio bug" not in text
 
 
 def test_investigate_device_error_reaches_the_ui():

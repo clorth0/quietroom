@@ -6,8 +6,12 @@ import re
 from collections.abc import Sequence
 
 from quietroom.bands import REGIONS, bands_for
-from quietroom.audio.capture import audio_correlation_test
-from quietroom.engine.detectors.audio_corr import AUDIO_CORR_THRESHOLD
+from quietroom.audio.capture import (
+    CaptureFailed,
+    LiveBug,
+    NoAudioMatch,
+    audio_correlation_test,
+)
 from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import Finding
 from quietroom.radio.device import Device
@@ -56,13 +60,19 @@ def format_findings(findings: list[Finding], verbose: bool = False) -> str:
     return "\n".join(lines)
 
 
-def format_verdict(freq_hz: float, correlation: float) -> str:
+def format_verdict(
+    freq_hz: float, verdict: LiveBug | NoAudioMatch | CaptureFailed
+) -> str:
     mhz = freq_hz / 1e6
-    if correlation >= AUDIO_CORR_THRESHOLD:
+    if isinstance(verdict, LiveBug):
         return (f"{mhz:.3f} MHz: envelope correlates with room audio at "
-                f"{correlation:.2f} -- LIKELY LIVE BUG")
-    return (f"{mhz:.3f} MHz: no audio correlation ({correlation:.2f}); "
-            f"not a detectable live audio bug")
+                f"{verdict.correlation:.2f} -- LIKELY LIVE BUG")
+    if isinstance(verdict, NoAudioMatch):
+        return (f"{mhz:.3f} MHz: no audio correlation ({verdict.correlation:.2f}); "
+                f"not a detectable live audio bug")
+    if isinstance(verdict, CaptureFailed):
+        return f"capture failed: {verdict.reason}"
+    raise TypeError("format_verdict requires LiveBug, NoAudioMatch, or CaptureFailed")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -125,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.demo:
             # Run the real DSP on a synthetic room: the demo device emits an AM
             # bug carrying the test chirp, and the "mic" is a loopback.
-            correlation = audio_correlation_test(
+            verdict = audio_correlation_test(
                 demo_device(), args.investigate,
                 play_record=lambda sig, fs: sig.astype(float),
             )
@@ -135,9 +145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("HackRF not detected. Connect it, or use --demo.")
                 return 1
             print("Playing test tone and listening on the suspect frequency...")
-            correlation = audio_correlation_test(radio, args.investigate)
-        print(format_verdict(float(args.investigate), correlation))
-        return 0
+            verdict = audio_correlation_test(radio, args.investigate)
+        print(format_verdict(float(args.investigate), verdict))
+        return 1 if isinstance(verdict, CaptureFailed) else 0
 
     if args.demo:
         demo = demo_device()

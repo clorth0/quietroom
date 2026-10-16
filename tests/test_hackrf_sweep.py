@@ -79,3 +79,50 @@ def test_sweep_skips_malformed_lines(monkeypatch):
     monkeypatch.setattr(hackrf.subprocess, "Popen", lambda *a, **k: _FakePopen(lines))
     (s,) = hackrf.HackRFDevice().sweep(100_000_000, 200_000_000, 1_000_000, cycles=1)
     assert s.power_dbm[0] == -90.0
+
+
+class _IQProc:
+    def __init__(self, raw: bytes, code: int):
+        self.stdout = self
+        self._raw = raw
+        self.returncode = None
+        self._code = code
+
+    def read(self, n=-1):
+        return self._raw if n < 0 else self._raw[:n]
+
+    def terminate(self):
+        return None
+
+    def wait(self, timeout=None):
+        self.returncode = self._code
+        return self._code
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_capture_iq_keeps_a_full_buffer_when_terminate_signals(monkeypatch):
+    raw = b"\x0a\xf6" * 8
+    monkeypatch.setattr(
+        hackrf.subprocess, "Popen", lambda *a, **k: _IQProc(raw, code=-15),
+    )
+    samples = hackrf.HackRFDevice().capture_iq(100_000_000, 2_000_000, 8)
+    assert len(samples) == 8
+
+
+def test_capture_iq_reports_a_short_read_and_the_exit_code(monkeypatch):
+    monkeypatch.setattr(
+        hackrf.subprocess, "Popen", lambda *a, **k: _IQProc(b"\x00\x00" * 2, code=1),
+    )
+    with pytest.raises(DeviceError, match=r"2 of 8 IQ samples \(exit 1\)"):
+        hackrf.HackRFDevice().capture_iq(100_000_000, 2_000_000, 8)
+
+
+def test_capture_iq_missing_binary_is_a_device_error(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("hackrf_transfer")
+
+    monkeypatch.setattr(hackrf.subprocess, "Popen", boom)
+    with pytest.raises(DeviceError, match="hackrf_transfer"):
+        hackrf.HackRFDevice().capture_iq(100_000_000, 2_000_000, 8)

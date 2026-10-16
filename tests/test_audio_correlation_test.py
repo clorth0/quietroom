@@ -1,6 +1,6 @@
 import numpy as np
 
-from quietroom.audio.capture import audio_correlation_test
+from quietroom.audio.capture import LiveBug, NoAudioMatch, audio_correlation_test
 from quietroom.audio.signal import make_chirp
 from quietroom.radio.device import Device, DeviceInfo
 
@@ -43,12 +43,13 @@ def test_audio_correlation_high_when_rf_carries_the_room_audio():
     def fake_play_record(signal, fs):
         return chirp.astype(float)          # mic "hears" the chirp
 
-    corr = audio_correlation_test(
+    verdict = audio_correlation_test(
         dev, 308_000_000,
         sample_rate=iq_rate, duration_s=duration, audio_fs=audio_fs,
         play_record=fake_play_record,
     )
-    assert corr > 0.8
+    assert isinstance(verdict, LiveBug)
+    assert verdict.correlation > 0.8
 
 
 def test_audio_correlation_low_when_rf_unrelated():
@@ -61,9 +62,10 @@ def test_audio_correlation_low_when_rf_unrelated():
     def fake_play_record(signal, fs):
         return make_chirp(duration, audio_fs).astype(float)
 
-    corr = audio_correlation_test(
+    verdict = audio_correlation_test(
         dev, 308_000_000,
         sample_rate=iq_rate, duration_s=duration, audio_fs=audio_fs,
         play_record=fake_play_record,
     )
-    assert corr < 0.5
+    assert isinstance(verdict, NoAudioMatch)
+    assert verdict.correlation < 0.5

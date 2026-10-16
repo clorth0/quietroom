@@ -5,7 +5,7 @@ import itertools
 from collections.abc import Iterator
 
 from quietroom.bands import BANDS, Band
-from quietroom.audio.capture import audio_correlation_test
+from quietroom.audio.capture import CaptureFailed, audio_correlation_test
 from quietroom.engine.baseline import build_baseline
 from quietroom.engine.detectors.audio_corr import score_audio
 from quietroom.engine.detectors.catalog import score_band
@@ -15,7 +15,7 @@ from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.plan import SweepPlan
 from quietroom.engine.score import score_candidate
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
-from quietroom.radio.device import Device
+from quietroom.radio.device import Device, DeviceError
 
 
 def capture_baseline(
@@ -69,23 +69,28 @@ def confirmed_findings(
         spectra = list(device.sweep(
             plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=n_sweeps,
         ))
+    if len(spectra) < n_sweeps:
+        raise DeviceError(f"device yielded {len(spectra)} of {n_sweeps} sweeps")
     batches = [sweep_findings(s, baseline, plan, k=k, bands=bands) for s in spectra]
-    return confirm_findings(batches, min_hits=min(min_hits, len(batches)))
+    return confirm_findings(batches, min_hits=min_hits)
 
 
 def investigate(
     device: Device,
     candidate: Candidate,
     *,
-    audio_test=audio_correlation_test,
     bands: list[Band] = BANDS,
     **audio_kwargs,
 ) -> Finding:
     """Run the audio-correlation test on a candidate and re-score it with all detectors."""
-    correlation = audio_test(device, candidate.center_freq_hz, **audio_kwargs)
+    verdict = audio_correlation_test(
+        device, int(candidate.center_freq_hz), **audio_kwargs,
+    )
+    if isinstance(verdict, CaptureFailed):
+        raise DeviceError(verdict.reason)
     results = [
         score_band(candidate, bands),
         score_signatures(candidate),
-        score_audio(correlation),
+        score_audio(verdict.correlation),
     ]
     return score_candidate(candidate, results, bands)
