@@ -30,9 +30,6 @@ def git_show(rev: str, path: str) -> str:
     return out.stdout
 
 
-# --- Question 1. Does a failed capture still read as a clean room? ---
-
-
 class _EmptyRadio:
     def capture_iq(self, center_hz: int, sample_rate: int, n_samples: int) -> np.ndarray:
         return np.zeros(0, dtype=np.complex64)
@@ -99,9 +96,6 @@ def measure_false_clean() -> dict:
     }
 
 
-# --- Question 2. Which shape stops the false clean? ---
-
-
 @dataclass(frozen=True)
 class IqCapture:
     samples: np.ndarray
@@ -141,9 +135,6 @@ def measure_verdict_shape() -> dict:
         "full_result": _try_capture(np.zeros(1000, dtype=np.complex64), 1000),
         "float_zero_still_prints_clean": True,
     }
-
-
-# --- Question 3. SweepPlan versus a duplicated-literal lint. ---
 
 
 @dataclass(frozen=True)
@@ -277,9 +268,6 @@ def measure_policy() -> dict:
     }
 
 
-# --- Question 4. Optional raw_score and a lowered min_hits. ---
-
-
 def measure_score_holes() -> dict:
     from quietroom.engine.persistence import _annotate
     from quietroom.engine.score import squash
@@ -329,9 +317,6 @@ def measure_score_holes() -> dict:
         "short_sweep_still_reports": len(findings),
         "short_sweep_min_hits_requested": 2,
     }
-
-
-# --- Question 5. Socket handlers and the closed-looking CORS default. ---
 
 
 def _handlers(source: str) -> list[dict]:
