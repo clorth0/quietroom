@@ -72,3 +72,15 @@ def zscores_aligned(live: PowerSpectrum, baseline: Baseline) -> np.ndarray:
 def zscores(live: PowerSpectrum, baseline: Baseline) -> np.ndarray:
     """Per-bin standard-score of live power above the baseline mean."""
     return zscores_aligned(aligned_live(live, baseline), baseline)
+
+
+def drift_report(old: Baseline, new: Baseline) -> dict:
+    """Compare two baselines on their shared grid: how much has the room moved?"""
+    live = PowerSpectrum(new.freqs_hz, new.mean_dbm, new.created_at)
+    aligned = aligned_live(live, old)
+    delta = np.abs(aligned.power_dbm - old.mean_dbm)
+    return {
+        "max_delta_db": float(delta.max()) if len(delta) else 0.0,
+        "mean_delta_db": float(delta.mean()) if len(delta) else 0.0,
+        "changed_fraction": float(np.mean(delta > 6.0)) if len(delta) else 0.0,
+    }
