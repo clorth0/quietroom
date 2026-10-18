@@ -1,13 +1,13 @@
 """One parser for every socket event the web UI sends."""
 from __future__ import annotations
 
-import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, assert_never
 
 from quietroom.bands import REGIONS
 from quietroom.radio.hackrf import MAX_HZ, MIN_HZ
+from quietroom.web.token import request_token_accepted
 
 
 @dataclass(frozen=True)
@@ -146,17 +146,9 @@ def _audio_kwargs(app: Any) -> dict:
 
 
 def _connect_allowed(auth: object, token: str | None) -> bool:
-    if token is None:
-        return True
+    """Socket policy: the shared acceptance, plus the auth-dict presentation."""
     given = auth.get("token") if isinstance(auth, dict) else None
-    if given and hmac.compare_digest(str(given).encode(), token.encode()):
-        return True
-    from flask import request
-
-    from quietroom.web.app import TOKEN_COOKIE
-
-    cookie = request.args.get("token") or request.cookies.get(TOKEN_COOKIE) or ""
-    return hmac.compare_digest(str(cookie).encode(), token.encode())
+    return request_token_accepted(token, auth_token=given)
 
 
 def _whole_number(raw: object) -> int | None:

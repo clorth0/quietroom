@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hmac
 import os
 
 from flask import Flask, abort, render_template, request
@@ -13,6 +12,7 @@ from quietroom.radio.recorded import streaming_demo_device
 from quietroom.web.bind import Bind, LocalBind, origin_checker, resolve_bind
 from quietroom.web.commands import CommandContext, dispatch
 from quietroom.web.session import ScanSession
+from quietroom.web.token import TOKEN_COOKIE, request_token_accepted, token_matches
 
 _CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 
@@ -34,9 +34,6 @@ def safe_tick(session, emit_fn) -> bool:
     return True
 
 
-TOKEN_COOKIE = "quietroom_token"
-
-
 def create_app(
     device=None,
     demo: bool = False,
@@ -52,18 +49,12 @@ def create_app(
     app = Flask(__name__)
     socketio = SocketIO(app, async_mode="threading", cors_allowed_origins=origin_ok)
 
-    def _token_ok() -> bool:
-        if token is None:
-            return True
-        given = request.args.get("token") or request.cookies.get(TOKEN_COOKIE) or ""
-        return hmac.compare_digest(given.encode(), token.encode())
-
     @app.before_request
     def _guard():
         # Host check defeats DNS rebinding (evil.example resolving to 127.0.0.1).
         if (request.host.rsplit(":", 1)[0].strip("[]")) not in allowed_hosts:
             abort(403)
-        if not _token_ok():
+        if not request_token_accepted(token):
             abort(403)
 
     if device is None:
@@ -83,7 +74,8 @@ def create_app(
         resp.headers["Content-Security-Policy"] = _CSP
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
-        if token is not None and request.args.get("token"):
+        given = request.args.get("token")
+        if token is not None and given and token_matches(given, token):
             resp.set_cookie(TOKEN_COOKIE, token, httponly=True, samesite="Strict")
         return resp
 
