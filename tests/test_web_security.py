@@ -120,3 +120,15 @@ def test_socket_connect_rejected_without_token():
     assert not client.is_connected()
     client = socketio.test_client(app, query_string="token=s3cret-token-value")
     assert client.is_connected()
+
+
+def test_wrong_query_token_does_not_receive_the_real_token_cookie():
+    # Regression (deliberate narrowing found while characterizing):
+    # after_request used to set the real token cookie for ANY non-empty
+    # ?token= value, so a rejected wrong guess still authenticated next.
+    app, _ = create_app(demo=True, bind=LocalBind(token="s3cret-token-value"))
+    c = app.test_client()
+    r = c.get("/?token=wrong")
+    assert r.status_code == 403
+    assert "quietroom_token" not in (r.headers.get("Set-Cookie") or "")
+    assert c.get("/").status_code == 403
