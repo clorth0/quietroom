@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 import numpy as np
 
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import PowerSpectrum
 from quietroom.radio.device import Device, DeviceInfo
 
@@ -22,8 +23,9 @@ class RecordedDevice(Device):
         return DeviceInfo(serial="recorded", board="RecordedDevice", firmware="n/a")
 
     def sweep(
-        self, f_start_hz: int, f_stop_hz: int, bin_hz: int, cycles: int = 1
+        self, plan: SweepPlan, cycles: int = 1
     ) -> Iterator[PowerSpectrum]:
+        # Replays fixed sweeps: the plan selects nothing here, by design.
         for i in range(cycles):
             yield self._sweeps[i % len(self._sweeps)]
 
@@ -93,20 +95,20 @@ class DemoDevice(Device):
         return DeviceInfo(serial="demo", board="DemoDevice", firmware="n/a")
 
     def sweep(
-        self, f_start_hz: int, f_stop_hz: int, bin_hz: int, cycles: int = 1
+        self, plan: SweepPlan, cycles: int = 1
     ) -> Iterator[PowerSpectrum]:
         for i in range(cycles):
             yield spectrum_grid(
-                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM, float(i + 1)
+                plan.start_hz, plan.stop_hz, plan.bin_hz,
+                DEMO_FLOOR_DBM, float(i + 1),
             )
 
-    def live_sweep(
-        self, f_start_hz: int, f_stop_hz: int, bin_hz: int
-    ) -> Iterator[PowerSpectrum]:
+    def live_sweep(self, plan: SweepPlan) -> Iterator[PowerSpectrum]:
         """Endless planted-bug sweeps on the same grid as `sweep`."""
         while True:
             yield spectrum_grid(
-                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM, 10.0, bug_hz=DEMO_BUG_HZ
+                plan.start_hz, plan.stop_hz, plan.bin_hz,
+                DEMO_FLOOR_DBM, 10.0, bug_hz=DEMO_BUG_HZ,
             )
 
     def capture_iq(self, center_hz, sample_rate, n_samples):
@@ -123,13 +125,13 @@ class StreamingDemoDevice(Device):
     def probe(self) -> DeviceInfo:
         return DeviceInfo(serial="demo", board="StreamingDemoDevice", firmware="n/a")
 
-    def sweep(self, f_start_hz, f_stop_hz, bin_hz, cycles=1):
+    def sweep(self, plan, cycles=1):
         for _ in range(cycles):
             clean = self._served < self._n_clean
             self._served += 1
             bug = None if clean else DEMO_BUG_HZ
             yield spectrum_grid(
-                f_start_hz, f_stop_hz, bin_hz, DEMO_FLOOR_DBM,
+                plan.start_hz, plan.stop_hz, plan.bin_hz, DEMO_FLOOR_DBM,
                 float(self._served), bug_hz=bug,
             )
 

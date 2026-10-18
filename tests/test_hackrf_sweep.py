@@ -1,7 +1,10 @@
 import pytest
 
 from quietroom.radio import hackrf
+from quietroom.engine.plan import SweepPlan
 from quietroom.radio.device import DeviceError
+
+_PLAN = SweepPlan.overview(100_000_000, 200_000_000, 1_000_000)
 
 
 class _FakePopen:
@@ -31,7 +34,7 @@ def test_sweep_yields_power_spectrum(monkeypatch):
     monkeypatch.setattr(hackrf.subprocess, "Popen", lambda *a, **k: _FakePopen(lines))
 
     dev = hackrf.HackRFDevice()
-    sweeps = list(dev.sweep(100_000_000, 200_000_000, 1_000_000, cycles=2))
+    sweeps = list(dev.sweep(_PLAN, cycles=2))
     assert len(sweeps) == 2
     first = sweeps[0]
     assert first.power_dbm[0] == -90.0   # 100 MHz bin, cycle 1
@@ -59,7 +62,7 @@ def test_sweep_reports_hackrf_error_when_process_dies(monkeypatch):
                                     k.get("stderr")),
     )
     with pytest.raises(DeviceError, match="Resource busy"):
-        list(hackrf.HackRFDevice().sweep(100_000_000, 200_000_000, 1_000_000, cycles=1))
+        list(hackrf.HackRFDevice().sweep(_PLAN, cycles=1))
 
 
 def test_sweep_missing_binary_is_a_device_error(monkeypatch):
@@ -67,7 +70,7 @@ def test_sweep_missing_binary_is_a_device_error(monkeypatch):
         raise FileNotFoundError("hackrf_sweep")
     monkeypatch.setattr(hackrf.subprocess, "Popen", boom)
     with pytest.raises(DeviceError, match="hackrf_sweep"):
-        list(hackrf.HackRFDevice().sweep(100_000_000, 200_000_000, 1_000_000))
+        list(hackrf.HackRFDevice().sweep(_PLAN))
 
 
 def test_sweep_skips_malformed_lines(monkeypatch):
@@ -77,7 +80,7 @@ def test_sweep_skips_malformed_lines(monkeypatch):
         "d, t, 100000000, 101000000, 1000000.00, 20, -89.0\n",
     ]
     monkeypatch.setattr(hackrf.subprocess, "Popen", lambda *a, **k: _FakePopen(lines))
-    (s,) = hackrf.HackRFDevice().sweep(100_000_000, 200_000_000, 1_000_000, cycles=1)
+    (s,) = hackrf.HackRFDevice().sweep(_PLAN, cycles=1)
     assert s.power_dbm[0] == -90.0
 
 

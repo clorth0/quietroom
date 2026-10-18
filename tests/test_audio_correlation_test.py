@@ -14,7 +14,7 @@ class _FakeIQDevice(Device):
     def probe(self):
         return DeviceInfo("fake", "Fake", "n/a")
 
-    def sweep(self, f_start_hz, f_stop_hz, bin_hz, cycles=1):
+    def sweep(self, plan, cycles=1):
         yield from ()
 
     def capture_iq(self, center_hz, sample_rate, n_samples):

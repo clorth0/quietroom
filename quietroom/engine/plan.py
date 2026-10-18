@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from quietroom.engine.detectors.signatures import NARROWBAND_HZ
-from quietroom.radio.hackrf import DEFAULT_BIN_HZ, MAX_HZ, MIN_HZ
+from quietroom.radio.limits import DEFAULT_BIN_HZ, MAX_HZ, MIN_HZ
 
 DEFAULT_START_HZ = 300_000_000
 DEFAULT_STOP_HZ = 320_000_000

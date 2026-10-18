@@ -17,13 +17,11 @@ from quietroom.radio.device import Device, DeviceError
 
 def capture_baseline(
     device: Device,
-    f_start_hz: int,
-    f_stop_hz: int,
-    bin_hz: int,
+    plan: SweepPlan,
     cycles: int = 5,
 ) -> Baseline:
     """Collect `cycles` sweeps from the device and average them into a baseline."""
-    spectra = list(device.sweep(f_start_hz, f_stop_hz, bin_hz, cycles=cycles))
+    spectra = list(device.sweep(plan, cycles=cycles))
     return build_baseline(spectra)
 
 
@@ -43,9 +41,7 @@ def live_findings(
     if live is not None:
         spectrum = next(iter(live))
     else:
-        spectrum = next(iter(device.sweep(
-            plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=1,
-        )))
+        spectrum = next(iter(device.sweep(plan, cycles=1)))
     return sweep_findings(spectrum, baseline, plan, k=k, bands=bands)
 
 
@@ -63,9 +59,7 @@ def confirmed_findings(
     if live is not None:
         spectra = list(itertools.islice(live, n_sweeps))
     else:
-        spectra = list(device.sweep(
-            plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=n_sweeps,
-        ))
+        spectra = list(device.sweep(plan, cycles=n_sweeps))
     if len(spectra) < n_sweeps:
         raise DeviceError(f"device yielded {len(spectra)} of {n_sweeps} sweeps")
     batches = [sweep_findings(s, baseline, plan, k=k, bands=bands) for s in spectra]

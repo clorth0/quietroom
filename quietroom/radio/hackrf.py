@@ -10,9 +10,11 @@ from collections.abc import Iterator
 
 import numpy as np
 
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import PowerSpectrum
 from quietroom.radio.capture import require_iq
 from quietroom.radio.device import Device, DeviceError, DeviceInfo
+from quietroom.radio.limits import MAX_HZ, MIN_HZ
 from quietroom.radio.parse import (
     SweepAccumulator,
     iq_cs8_to_complex,
@@ -23,15 +25,7 @@ HACKRF_SWEEP = shutil.which("hackrf_sweep") or "/opt/homebrew/bin/hackrf_sweep"
 HACKRF_TRANSFER = shutil.which("hackrf_transfer") or "/opt/homebrew/bin/hackrf_transfer"
 HACKRF_INFO = shutil.which("hackrf_info") or "/opt/homebrew/bin/hackrf_info"
 
-MIN_HZ = 1_000_000
-MAX_HZ = 6_000_000_000
 DEFAULT_LNA = 16
-# Default sweep resolution. hackrf_sweep's firmware captures a fixed block of
-# samples at each 10 MHz step whatever -w is, so a finer bin costs little sweep
-# time; it only grows the host FFT and output. 25 kHz resolves 12.5/25 kHz NFM
-# bugs (<= the 50 kHz narrowband threshold) and lowers per-bin noise ~16 dB vs
-# 1 MHz, so narrow carriers stand out.
-DEFAULT_BIN_HZ = 25_000
 DEFAULT_VGA = 20
 IQ_BASEBAND_HZ = 1_750_000
 # HackRF gain ranges: LNA (IF) 0-40 dB in 8 dB steps, VGA (baseband) 0-62 dB in 2 dB steps.
@@ -158,10 +152,11 @@ class HackRFDevice(Device):
         return probe_hackrf()
 
     def sweep(
-        self, f_start_hz: int, f_stop_hz: int, bin_hz: int, cycles: int = 1
+        self, plan: SweepPlan, cycles: int = 1
     ) -> Iterator[PowerSpectrum]:
         cmd = build_sweep_cmd(
-            f_start_hz, f_stop_hz, bin_hz, self.lna_gain, self.vga_gain, self.amp
+            plan.start_hz, plan.stop_hz, plan.bin_hz,
+            self.lna_gain, self.vga_gain, self.amp,
         )
         # stderr goes to a temp file, not a pipe: hackrf_sweep logs status to
         # stderr continuously and an unread pipe would eventually block it.

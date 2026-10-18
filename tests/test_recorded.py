@@ -15,7 +15,7 @@ def _flat(power, t=0.0):
 def test_recorded_device_cycles_sweeps():
     a, b = _flat(-95, 1.0), _flat(-90, 2.0)
     dev = RecordedDevice(sweeps=[a, b], iq=np.zeros(4, dtype=np.complex64))
-    out = list(dev.sweep(0, 1, 1, cycles=3))  # cycles beyond list -> wrap around
+    out = list(dev.sweep(SweepPlan.search(), cycles=3))  # cycles beyond list -> wrap around
     assert len(out) == 3
     assert out[0].power_dbm[0] == -95.0
     assert out[2].power_dbm[0] == -95.0  # wrapped back to first
@@ -26,10 +26,8 @@ def test_recorded_device_cycles_sweeps():
 def test_demo_device_has_a_plantable_bug():
     dev = demo_device()
     plan = SweepPlan.search()
-    baseline = build_baseline(list(dev.sweep(
-        plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=3,
-    )))
-    live = next(iter(dev.live_sweep(plan.start_hz, plan.stop_hz, plan.bin_hz)))
+    baseline = build_baseline(list(dev.sweep(plan, cycles=3)))
+    live = next(iter(dev.live_sweep(plan)))
     findings = sweep_findings(live, baseline, plan)
     assert findings
     assert findings[0].score > 50.0
