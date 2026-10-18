@@ -9,11 +9,11 @@ from quietroom.scan import capture_baseline, confirmed_findings, live_findings
 def test_capture_baseline_then_find_planted_bug():
     dev = demo_device()
     plan = SweepPlan.search()
-    baseline = capture_baseline(dev, plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=3)
+    baseline = capture_baseline(dev, plan, cycles=3)
     assert baseline.sweep_count == 3
     findings = live_findings(
         dev, baseline, plan,
-        dev.live_sweep(plan.start_hz, plan.stop_hz, plan.bin_hz),
+        dev.live_sweep(plan),
     )
     assert findings
     assert findings[0].score > 50.0
@@ -24,7 +24,7 @@ def test_capture_baseline_then_find_planted_bug():
 def test_short_sweep_raises_instead_of_lowering_min_hits():
     dev = demo_device()
     plan = SweepPlan.search()
-    baseline = capture_baseline(dev, plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=3)
+    baseline = capture_baseline(dev, plan, cycles=3)
     hot = spectrum_grid(
         plan.start_hz, plan.stop_hz, plan.bin_hz, DEMO_FLOOR_DBM, 10.0, bug_hz=DEMO_BUG_HZ,
     )

@@ -136,4 +136,4 @@ def test_web_session_default_bin_matches_cli():
     from quietroom.engine.plan import SweepPlan
     from quietroom.radio.recorded import streaming_demo_device
     from quietroom.web.session import ScanSession
-    assert ScanSession(streaming_demo_device()).bin_hz == SweepPlan.search().bin_hz
+    assert ScanSession(streaming_demo_device()).plan.bin_hz == SweepPlan.search().bin_hz

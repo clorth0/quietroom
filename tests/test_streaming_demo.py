@@ -9,11 +9,9 @@ from quietroom.engine.pipeline import sweep_findings
 def test_baseline_clean_then_bug_appears():
     dev = streaming_demo_device(n_clean=3)
     plan = SweepPlan.overview(300_000_000, 320_000_000, 1_000_000)
-    baseline = build_baseline(list(dev.sweep(
-        plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=3,
-    )))
+    baseline = build_baseline(list(dev.sweep(plan, cycles=3)))
     # After the 3 clean baseline sweeps, the next sweep carries the planted bug.
-    live = next(iter(dev.sweep(plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=1)))
+    live = next(iter(dev.sweep(plan, cycles=1)))
     findings = sweep_findings(live, baseline, plan)
     assert findings and findings[0].score > 50.0
     assert abs(findings[0].candidate.center_freq_hz - 308_000_000.0) < 1e6
@@ -22,5 +20,5 @@ def test_baseline_clean_then_bug_appears():
 def test_clean_sweeps_have_no_bug():
     dev = streaming_demo_device(n_clean=3)
     plan = SweepPlan.search()
-    first = next(iter(dev.sweep(plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=1)))
+    first = next(iter(dev.sweep(plan, cycles=1)))
     assert float(np.max(first.power_dbm)) < -80.0   # clean noise floor

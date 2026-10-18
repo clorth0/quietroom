@@ -51,9 +51,6 @@ class ScanSession:
             start, stop, width,
         )
         self.device = device
-        self.f_start_hz = self.plan.start_hz
-        self.f_stop_hz = self.plan.stop_hz
-        self.bin_hz = self.plan.bin_hz
         self.set_region(region)
         self.baseline: Baseline | None = None
         self._last: dict[float, Finding] = {}
@@ -70,9 +67,7 @@ class ScanSession:
         return band_label_for(c.center_freq_hz, self.bands)
 
     def capture_baseline(self, cycles: int = 5) -> int:
-        baseline = _capture_baseline(
-            self.device, self.f_start_hz, self.f_stop_hz, self.bin_hz, cycles=cycles
-        )
+        baseline = _capture_baseline(self.device, self.plan, cycles=cycles)
         with self._lock:
             self.baseline = baseline
             self.tracker.reset()
@@ -80,7 +75,7 @@ class ScanSession:
 
     def sweep_once(self) -> tuple[dict, list[dict]]:
         spectrum = next(
-            iter(self.device.sweep(self.f_start_hz, self.f_stop_hz, self.bin_hz, cycles=1))
+            iter(self.device.sweep(self.plan, cycles=1))
         )
         with self._lock:
             baseline = self.baseline

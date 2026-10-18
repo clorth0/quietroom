@@ -151,11 +151,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.demo:
         demo = demo_device()
-        baseline = capture_baseline(demo, plan.start_hz, plan.stop_hz, plan.bin_hz,
-                                    cycles=3)
+        baseline = capture_baseline(demo, plan, cycles=3)
         findings = confirmed_findings(
             demo, baseline, args.live_sweeps, args.min_hits, plan,
-            live=demo.live_sweep(plan.start_hz, plan.stop_hz, plan.bin_hz),
+            live=demo.live_sweep(plan),
             bands=bands, k=args.k,
         )
         print(format_findings(findings, verbose=args.verbose))
@@ -166,8 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("HackRF not detected. Connect it, or use --demo.")
         return 1
     print("Capturing baseline; keep the area quiet...")
-    baseline = capture_baseline(dev, plan.start_hz, plan.stop_hz, plan.bin_hz,
-                                cycles=args.baseline_cycles)
+    baseline = capture_baseline(dev, plan, cycles=args.baseline_cycles)
     print("Sweeping for suspicious emitters...")
     findings = confirmed_findings(
         dev, baseline, args.live_sweeps, args.min_hits, plan,

@@ -51,9 +51,7 @@ def test_pipeline_rejects_spacing_that_does_not_match_the_plan():
 
 def test_demo_grid_uses_the_requested_bin():
     plan = SweepPlan.search()
-    spec = next(iter(demo_device().sweep(
-        plan.start_hz, plan.stop_hz, plan.bin_hz, cycles=1,
-    )))
+    spec = next(iter(demo_device().sweep(plan, cycles=1)))
     assert spec.freqs_hz[1] - spec.freqs_hz[0] == plan.bin_hz
 
 
@@ -72,9 +70,9 @@ def test_span_literals_live_only_in_the_plan():
         assert "320_000_000" not in text
 
 
-def test_radio_limits_are_assigned_only_in_hackrf():
+def test_radio_limits_are_assigned_only_in_radio_limits():
     for path in ROOT.rglob("*.py"):
-        if path.name == "hackrf.py":
+        if path.name == "limits.py":
             continue
         for line in path.read_text().splitlines():
             stripped = line.strip()

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import PowerSpectrum
 
 
@@ -30,9 +31,9 @@ class Device(ABC):
 
     @abstractmethod
     def sweep(
-        self, f_start_hz: int, f_stop_hz: int, bin_hz: int, cycles: int = 1
+        self, plan: SweepPlan, cycles: int = 1
     ) -> Iterator[PowerSpectrum]:
-        """Yield up to `cycles` full power-vs-frequency sweeps."""
+        """Yield up to `cycles` full power-vs-frequency sweeps for `plan`."""
 
     @abstractmethod
     def capture_iq(
