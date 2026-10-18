@@ -3,11 +3,9 @@ from __future__ import annotations
 
 from quietroom.bands import BANDS, Band
 
-from quietroom.engine.detectors.catalog import score_band
 from quietroom.engine.detectors.diff import find_candidates
-from quietroom.engine.detectors.signatures import score_signatures
 from quietroom.engine.plan import SweepPlan
-from quietroom.engine.score import score_candidate
+from quietroom.engine.score import assemble_finding
 from quietroom.engine.spectrum import Baseline, Finding, PowerSpectrum
 
 
@@ -38,18 +36,19 @@ def sweep_findings(
     k: float = 4.0,
     bands: list[Band] = BANDS,
 ) -> list[Finding]:
-    """Run the diff + catalog + signature detectors and rank the results.
+    """Run the diff detector, score each candidate, and rank the results.
 
-    The audio-correlation detector is intentionally not run here: it requires
-    tuning and microphone capture and is triggered on demand per candidate by
-    the radio/web layer, which then re-scores that candidate with an extra
-    audio DetectorResult.
+    Scoring itself — the detector roster, band labelling and fusion — is
+    owned by the scoring assembly (engine.score); this module only finds
+    candidates and hands each one across that seam. The audio-correlation
+    detector is intentionally not run here: it requires tuning and
+    microphone capture and is triggered on demand per candidate by the
+    radio/web layer, which re-scores through the same seam.
     """
     _require_spacing(live.freqs_hz, plan)
     _require_spacing(baseline.freqs_hz, plan)
     findings: list[Finding] = []
     for candidate in find_candidates(live, baseline, k=k):
-        results = [score_band(candidate, bands), score_signatures(candidate)]
-        findings.append(score_candidate(candidate, results, bands))
+        findings.append(assemble_finding(candidate, bands))
     findings.sort(key=lambda f: f.score, reverse=True)
     return findings

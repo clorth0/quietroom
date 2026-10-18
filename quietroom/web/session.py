@@ -4,9 +4,10 @@ from __future__ import annotations
 import threading
 
 from quietroom.engine.persistence import PersistenceTracker
-from quietroom.bands import bands_for, label_for
+from quietroom.bands import bands_for
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.plan import SweepPlan
+from quietroom.engine.score import band_label_for
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device
 from quietroom.scan import capture_baseline as _capture_baseline
@@ -66,8 +67,7 @@ class ScanSession:
         self.bands = bands
 
     def score_label(self, c: Candidate) -> str:
-        band = label_for(c.center_freq_hz, self.bands)
-        return band.label if band else "unknown"
+        return band_label_for(c.center_freq_hz, self.bands)
 
     def capture_baseline(self, cycles: int = 5) -> int:
         baseline = _capture_baseline(

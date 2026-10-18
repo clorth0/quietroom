@@ -7,13 +7,10 @@ from collections.abc import Iterator
 from quietroom.bands import BANDS, Band
 from quietroom.audio.capture import CaptureFailed, audio_correlation_test
 from quietroom.engine.baseline import build_baseline
-from quietroom.engine.detectors.audio_corr import score_audio
-from quietroom.engine.detectors.catalog import score_band
-from quietroom.engine.detectors.signatures import score_signatures
 from quietroom.engine.persistence import confirm_findings
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.plan import SweepPlan
-from quietroom.engine.score import score_candidate
+from quietroom.engine.score import assemble_finding
 from quietroom.engine.spectrum import Baseline, Candidate, Finding, PowerSpectrum
 from quietroom.radio.device import Device, DeviceError
 
@@ -82,15 +79,15 @@ def investigate(
     bands: list[Band] = BANDS,
     **audio_kwargs,
 ) -> Finding:
-    """Run the audio-correlation test on a candidate and re-score it with all detectors."""
+    """Run the audio-correlation test on a candidate and re-score it.
+
+    The re-score crosses the same scoring seam as a fresh sweep, with the
+    audio correlation added through it — so the detector roster, band
+    labelling and fusion an investigator sees are the sweep's own.
+    """
     verdict = audio_correlation_test(
         device, int(candidate.center_freq_hz), **audio_kwargs,
     )
     if isinstance(verdict, CaptureFailed):
         raise DeviceError(verdict.reason)
-    results = [
-        score_band(candidate, bands),
-        score_signatures(candidate),
-        score_audio(verdict.correlation),
-    ]
-    return score_candidate(candidate, results, bands)
+    return assemble_finding(candidate, bands, audio_correlation=verdict.correlation)

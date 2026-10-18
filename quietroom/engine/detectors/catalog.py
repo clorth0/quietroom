@@ -17,7 +17,16 @@ SHARED_NEARFIELD_POINTS = 0.0      # shared bands, near-field signal
 
 
 def score_band(candidate: Candidate, bands: list[Band] = BANDS) -> DetectorResult:
-    band = label_for(candidate.center_freq_hz, bands)
+    return score_band_in(candidate, label_for(candidate.center_freq_hz, bands))
+
+
+def score_band_in(candidate: Candidate, band: Band | None) -> DetectorResult:
+    """Score a candidate against its already-resolved catalog band.
+
+    The scoring assembly resolves the band once and hands it in, so the
+    label behind the Finding and the band behind this contribution are
+    the same resolution, not two lookups that could drift apart.
+    """
     if band is None:
         return DetectorResult("catalog", UNKNOWN_BAND_POINTS,
                               ["not in any known band"])
