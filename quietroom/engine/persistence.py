@@ -8,12 +8,10 @@ new finding with how often it has been seen.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import replace
 
-from quietroom.engine.score import squash
+from quietroom.engine.score import PERSIST_MAX_POINTS as PERSIST_MAX_POINTS
+from quietroom.engine.score import apply_persistence
 from quietroom.engine.spectrum import Finding
-
-PERSIST_MAX_POINTS = 10.0
 
 
 def _tolerance(f: Finding, tolerance_hz: float | None) -> float:
@@ -51,23 +49,8 @@ class PersistenceTracker:
                 1 for sweep in self._history
                 if any(abs(freq - g) <= tol for g in sweep)
             )
-            out.append(_annotate(f, hits, n, self.min_hits))
+            out.append(apply_persistence(f, hits, n, self.min_hits))
         return out
-
-
-def _annotate(f: Finding, hits: int, n: int, min_hits: int) -> Finding:
-    breakdown = dict(f.breakdown)
-    reasons = list(f.reasons)
-    raw = f.raw_score
-    if hits >= min_hits:
-        bonus = PERSIST_MAX_POINTS * hits / n
-        breakdown["persistence"] = bonus
-        reasons.append(f"persistent: seen in {hits}/{n} sweeps")
-        return replace(f, score=squash(raw + bonus), raw_score=raw + bonus,
-                       reasons=reasons, breakdown=breakdown)
-    breakdown["persistence"] = 0.0
-    reasons.append(f"unconfirmed: seen in {hits}/{n} sweeps")
-    return replace(f, reasons=reasons, breakdown=breakdown)
 
 
 def confirm_findings(batches: list[list[Finding]], min_hits: int = 2,
@@ -95,6 +78,6 @@ def confirm_findings(batches: list[list[Finding]], min_hits: int = 2,
         hits = sum(1 for b in batches
                    if any(abs(g.candidate.center_freq_hz - freq) <= tol for g in b))
         if hits >= min_hits:
-            final.append(_annotate(f, hits, n, min_hits))
+            final.append(apply_persistence(f, hits, n, min_hits))
     final.sort(key=lambda f: f.score, reverse=True)
     return final
