@@ -8,6 +8,7 @@ from flask import Flask, abort, render_template, request
 from flask_socketio import SocketIO
 
 from quietroom.bands import REGIONS
+from quietroom.engine.plan import SweepPlan, format_freq_hz
 from quietroom.radio.recorded import streaming_demo_device
 from quietroom.web.bind import Bind, LocalBind, origin_checker, resolve_bind
 from quietroom.web.commands import CommandContext, dispatch
@@ -81,10 +82,14 @@ def create_app(
 
     @app.route("/")
     def index():
+        plan = session.plan if session is not None else SweepPlan.search()
         return render_template(
             "index.html",
             regions=sorted(REGIONS),
             region=session.region if session is not None else region,
+            sweep_start=format_freq_hz(plan.start_hz),
+            sweep_stop=format_freq_hz(plan.stop_hz),
+            sweep_bin=format_freq_hz(plan.bin_hz),
         )
 
     from flask_socketio import emit
@@ -94,6 +99,10 @@ def create_app(
     @socketio.on("connect")
     def _on_connect(auth=None):
         return dispatch("connect", auth, ctx)
+
+    @socketio.on("set_sweep")
+    def _on_set_sweep(data):
+        return dispatch("set_sweep", data, ctx)
 
     @socketio.on("set_region")
     def _on_set_region(data):

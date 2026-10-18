@@ -16,6 +16,20 @@ document.getElementById("baseline").onclick = () => {
 document.getElementById("start").onclick = () => { socket.emit("start", {}); setStatus("sweeping"); };
 document.getElementById("stop").onclick = () => { socket.emit("stop", {}); setStatus("stopped"); };
 
+document.getElementById("sweep-apply").onclick = () => {
+  socket.emit("set_sweep", {
+    start: document.getElementById("sweep-start").value,
+    stop: document.getElementById("sweep-stop").value,
+    bin: document.getElementById("sweep-bin").value,
+  });
+};
+socket.on("sweep_plan", (d) => {
+  document.getElementById("sweep-start").value = `${d.start_hz / 1e6}M`;
+  document.getElementById("sweep-stop").value = `${d.stop_hz / 1e6}M`;
+  document.getElementById("sweep-bin").value = `${d.bin_hz / 1e3}k`;
+  setStatus(`sweep: ${d.start_hz / 1e6}-${d.stop_hz / 1e6} MHz, bin ${d.bin_hz / 1e3} kHz`);
+});
+
 document.getElementById("region").onchange = (e) => {
   socket.emit("set_region", { region: e.target.value });
 };

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from quietroom.engine.persistence import PersistenceTracker
 from quietroom.bands import bands_for
@@ -23,6 +23,15 @@ class SpectrumPayload(TypedDict):
     powers: list[float]
 
 
+class SweepPlanPayload(TypedDict):
+    """Plan shape ScanSession emits after a sweep-plan change."""
+
+    start_hz: int
+    stop_hz: int
+    bin_hz: int
+    mode: Literal["search", "overview"]
+
+
 class FindingPayload(TypedDict):
     """Finding shape ScanSession emits to the browser (JSON: plain dict)."""
 
@@ -39,6 +48,15 @@ def spectrum_payload(ps: PowerSpectrum) -> SpectrumPayload:
         "f0": float(ps.freqs_hz[0]),
         "f1": float(ps.freqs_hz[-1]),
         "powers": [float(p) for p in ps.power_dbm],
+    }
+
+
+def sweep_plan_payload(plan: SweepPlan) -> SweepPlanPayload:
+    return {
+        "start_hz": int(plan.start_hz),
+        "stop_hz": int(plan.stop_hz),
+        "bin_hz": int(plan.bin_hz),
+        "mode": plan.mode,
     }
 
 
@@ -76,6 +94,25 @@ class ScanSession:
         self._last: dict[float, Finding] = {}
         self._lock = threading.Lock()
         self.tracker = PersistenceTracker(window=5, min_hits=2)
+
+    def set_plan(self, start_hz: int, stop_hz: int, bin_hz: int) -> SweepPlanPayload:
+        """Replace the sweep plan; validation is SweepPlan's (the CLI's).
+
+        Construction happens before any state changes, so a rejected
+        plan leaves the current plan, baseline, and findings intact.
+        An accepted plan invalidates the old baseline: its grid was
+        captured for the previous span/bin and cannot score this one.
+        Mode is preserved exactly as constructed (search/overview is
+        not a web control).
+        """
+        plan = (SweepPlan.overview if self.plan.mode == "overview"
+                else SweepPlan.search)(start_hz, stop_hz, bin_hz)
+        with self._lock:
+            self.plan = plan
+            self.baseline = None
+            self.tracker.reset()
+            self._last = {}
+        return sweep_plan_payload(plan)
 
     def set_region(self, region: str) -> None:
         """Switch the band catalog used to explain known emitters."""

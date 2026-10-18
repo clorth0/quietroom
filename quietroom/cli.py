@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import re
 from collections.abc import Sequence
 
 from quietroom.bands import REGIONS, bands_for
@@ -12,7 +11,7 @@ from quietroom.audio.capture import (
     NoAudioMatch,
     audio_correlation_test,
 )
-from quietroom.engine.plan import SweepPlan
+from quietroom.engine.plan import SweepPlan, parse_freq_hz
 from quietroom.engine.spectrum import Finding
 from quietroom.radio.device import Device
 from quietroom.radio.hackrf import (
@@ -25,18 +24,12 @@ from quietroom.radio.recorded import demo_device
 from quietroom.scan import capture_baseline, confirmed_findings
 
 
-_FREQ_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmg]?)(?:hz)?\s*$", re.IGNORECASE)
-_SCALE = {"": 1, "k": 1e3, "m": 1e6, "g": 1e9}
-
-
 def parse_freq(text: str) -> int:
     """Parse '308M', '433.92MHz', '2.4G', '25k' or bare Hz into integer Hz."""
-    m = _FREQ_RE.match(text or "")
-    if not m:
-        raise argparse.ArgumentTypeError(
-            f"invalid frequency {text!r}; use e.g. 308M, 433.92MHz, 2.4G, 25k or Hz"
-        )
-    return int(round(float(m.group(1)) * _SCALE[m.group(2).lower()]))
+    try:
+        return parse_freq_hz(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def format_breakdown(f: Finding) -> str:
