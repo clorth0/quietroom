@@ -59,6 +59,12 @@ class NodeConfig:
     baseline_cycles: int = 5
     poll_s: float = 1.0
     segments: tuple[SegmentConfig, ...] = ()
+    store_path: str = ""
+    alert_min_score: float = 80.0
+    alert_cooldown_s: float = 3600.0
+    webhook_url: str = ""
+    fleet_base_url: str = ""
+    fleet_heartbeat_s: float = 60.0
 
     @classmethod
     def from_dict(cls, d):
@@ -78,6 +84,9 @@ class NodeConfig:
         cycles = int(n.get("baseline_cycles", 5))
         if cycles < 1:
             raise ValueError("baseline_cycles must be >= 1")
+        store = d.get("store", {})
+        alerts = d.get("alerts", {})
+        fleet = d.get("fleet", {})
         return cls(
             str(n.get("id", "quietroom-node")),
             str(n.get("site", "")),
@@ -88,6 +97,12 @@ class NodeConfig:
             cycles,
             float(n.get("poll_s", 1.0)),
             segs,
+            str(store.get("path", "")),
+            float(alerts.get("min_score", 80.0)),
+            float(alerts.get("cooldown_s", 3600.0)),
+            str(alerts.get("webhook_url", "")),
+            str(fleet.get("base_url", "")),
+            float(fleet.get("heartbeat_s", 60.0)),
         )
 
     def to_dict(self):
