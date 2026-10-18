@@ -5,7 +5,13 @@ def _unit(): return (ROOT/"packaging/systemd/quietroom-node.service").read_text(
 
 def test_systemd_unit_is_hardened_and_watchdogged():
     u=_unit()
-    for needle in ["ExecStart=/usr/local/bin/quietroom-node --config /etc/quietroom/config.toml","User=quietroom","Restart=on-failure","WatchdogSec=120","NotifyAccess=main","NoNewPrivileges=true","ProtectSystem=strict","ReadWritePaths=/var/lib/quietroom","WantedBy=multi-user.target"]:
+    needles = [
+        "ExecStart=/usr/local/bin/quietroom-node --config /etc/quietroom/config.toml",
+        "User=quietroom", "Restart=on-failure", "WatchdogSec=120", "NotifyAccess=main",
+        "NoNewPrivileges=true", "ProtectSystem=strict",
+        "ReadWritePaths=/var/lib/quietroom", "WantedBy=multi-user.target",
+    ]
+    for needle in needles:
         assert needle in u, needle
 
 def test_udev_and_install_script():

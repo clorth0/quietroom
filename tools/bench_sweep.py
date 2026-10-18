@@ -7,7 +7,6 @@ revisit intervals in the node config.
 
 from __future__ import annotations
 import time
-import numpy as np
 from quietroom.engine.baseline import build_baseline
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.plan import SweepPlan
@@ -17,7 +16,7 @@ from quietroom.radio.parse import SweepAccumulator, parse_sweep_line
 def _lines(f0, f1, binw):
     per = max(1, int(5e6 / binw))
     for lo in range(int(f0), int(f1), 5_000_000):
-        yield "d, t, %d, %d, %.2f, 20, " % (lo, lo + 5_000_000, binw) + ", ".join(["-90.0"] * per)
+        yield f"d, t, {lo}, {lo + 5_000_000}, {binw:.2f}, 20, " + ", ".join(["-90.0"] * per)
 
 
 def bench(f0=300_000_000, f1=320_000_000, binw=25_000, reps=3):
