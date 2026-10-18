@@ -113,9 +113,17 @@ class ScanSession:
     def investigate(self, freq_hz: float, **audio_kwargs) -> FindingPayload:
         with self._lock:
             finding = self._last.get(float(freq_hz))
+            # Read the annotation facts from the recorded sweeps; the
+            # tracker is not advanced -- investigating is not a sweep.
+            persistence = (
+                self.tracker.count_for(finding) if finding is not None else None
+            )
         if finding is None:
             raise KeyError(f"no current suspect at {freq_hz} Hz")
-        updated = _investigate(self.device, finding.candidate, bands=self.bands, **audio_kwargs)
+        updated = _investigate(
+            self.device, finding.candidate, bands=self.bands,
+            persistence=persistence, **audio_kwargs,
+        )
         with self._lock:
             self._last[float(freq_hz)] = updated
         return finding_payload(updated)

@@ -84,13 +84,22 @@ class PersistenceTracker:
         self._history.clear()
         self.sweeps_seen = 0
 
+    def count_for(self, finding: Finding) -> HitCount:
+        """Hit count for `finding` over the sweeps recorded so far.
+
+        Read-only: an investigate re-score asks this so it can carry the
+        annotation forward without recording a new sweep (investigating
+        is not a sweep, and counting it as one would inflate the count).
+        """
+        return count_hits(finding, self._history, self.min_hits, self.tolerance_hz)
+
     def update(self, findings: list[Finding]) -> list[Finding]:
         """Record one sweep's findings and return them annotated with persistence."""
         self._history.append([f.candidate.center_freq_hz for f in findings])
         self.sweeps_seen += 1
         out = []
         for f in findings:
-            count = count_hits(f, self._history, self.min_hits, self.tolerance_hz)
+            count = self.count_for(f)
             # Policy (streaming/web): keep every finding; apply_persistence
             # marks ones below min_hits "unconfirmed" instead of dropping them.
             out.append(apply_persistence(f, count.hits, count.sweeps, self.min_hits))

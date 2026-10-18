@@ -15,18 +15,25 @@ Callers cross this seam through ``assemble_finding`` (fresh or
 investigate scoring), ``band_label_for``, ``apply_persistence`` and, for
 caller-supplied detector results, ``score_candidate``. Pipeline, scan and
 persistence no longer assemble a roster or re-derive fusion themselves.
+The persistence annotation is applied *inside* ``assemble_finding`` when
+the caller supplies the hit count, so a re-score cannot silently drop it:
+callers pass the facts (a ``HitCount``), never a copy of the fusion step.
 """
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from quietroom.bands import BANDS, Band, label_for
 from quietroom.engine.detectors.audio_corr import score_audio
 from quietroom.engine.detectors.catalog import score_band_in
 from quietroom.engine.detectors.signatures import score_signatures
 from quietroom.engine.spectrum import Candidate, DetectorResult, Finding
+
+if TYPE_CHECKING:
+    from quietroom.engine.persistence import HitCount
 
 # Raw SNR over baseline contributes a small, capped amount on its own.
 SNR_CAP_DB = 20.0
@@ -96,13 +103,24 @@ def _fuse(candidate: Candidate, results: list[DetectorResult],
     )
 
 
+def _with_persistence(finding: Finding, persistence: HitCount | None) -> Finding:
+    if persistence is None:
+        return finding
+    return apply_persistence(
+        finding, persistence.hits, persistence.sweeps, persistence.min_hits,
+    )
+
+
 def score_candidate(
     candidate: Candidate,
     results: list[DetectorResult],
     bands: list[Band] = BANDS,
+    *,
+    persistence: HitCount | None = None,
 ) -> Finding:
     """Fuse caller-supplied detector results for a candidate into a Finding."""
-    return _fuse(candidate, results, band_label_for(candidate.center_freq_hz, bands))
+    finding = _fuse(candidate, results, band_label_for(candidate.center_freq_hz, bands))
+    return _with_persistence(finding, persistence)
 
 
 def assemble_finding(
@@ -110,18 +128,43 @@ def assemble_finding(
     bands: list[Band] = BANDS,
     *,
     audio_correlation: float | None = None,
+    persistence: HitCount | None = None,
 ) -> Finding:
     """Score a candidate through the one roster, labelling its band once.
 
     The audio-correlation detector is not in the roster: it needs tuning
     and microphone capture, so it is run on demand by the caller and its
     correlation is added through this same seam when present.
+
+    `persistence` is the hit count for this candidate over the sweeps
+    already seen (see ``persistence.count_hits``). When supplied, the
+    persistence annotation is applied here, inside the seam, so a
+    re-score that has sweep history cannot forget it. It is the only
+    per-path difference: a fresh sweep has no history yet and supplies
+    None; an investigate re-score supplies the count for the sweep it
+    came from. Investigating is not a new sweep, so the count is read,
+    not advanced, by the caller.
     """
     band = label_for(candidate.center_freq_hz, bands)
     results = [detector(candidate, band) for detector in DETECTOR_ROSTER]
     if audio_correlation is not None:
         results.append(score_audio(audio_correlation))
-    return _fuse(candidate, results, band.label if band else "unknown")
+    finding = _fuse(candidate, results, band.label if band else "unknown")
+    return _with_persistence(finding, persistence)
+
+
+def _without_persistence(finding: Finding) -> Finding:
+    """Strip any persistence annotation, returning the un-annotated finding."""
+    if "persistence" not in finding.breakdown:
+        return finding
+    raw = finding.raw_score - finding.breakdown["persistence"]
+    breakdown = {k: v for k, v in finding.breakdown.items() if k != "persistence"}
+    reasons = [
+        r for r in finding.reasons
+        if not r.startswith(("persistent: seen in ", "unconfirmed: seen in "))
+    ]
+    return replace(finding, score=squash(raw), raw_score=raw,
+                   reasons=reasons, breakdown=breakdown)
 
 
 def apply_persistence(finding: Finding, hits: int, sweeps: int,
@@ -131,7 +174,12 @@ def apply_persistence(finding: Finding, hits: int, sweeps: int,
     The fusion edit lives here, not in the caller: a confirmed emitter's
     bonus joins the breakdown and reasons and is re-squashed into the
     score; an unconfirmed one records a zero persistence entry instead.
+
+    Idempotent: an already-annotated finding is first stripped back to
+    its un-annotated score, so applying the same annotation twice (or
+    re-scoring an annotated finding) never double-counts the bonus.
     """
+    finding = _without_persistence(finding)
     breakdown = dict(finding.breakdown)
     reasons = list(finding.reasons)
     raw = finding.raw_score

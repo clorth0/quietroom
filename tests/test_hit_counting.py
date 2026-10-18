@@ -101,3 +101,12 @@ def test_both_call_shapes_cross_the_one_counting_implementation(monkeypatch):
     # Batch policy would normally drop a single-sweep transient.
     kept = confirm_findings([[_f(300e6)], [_f(310e6)]], min_hits=2)
     assert {f.candidate.center_freq_hz for f in kept} == {300e6, 310e6}
+
+
+def test_tracker_count_for_is_read_only_and_repeatable():
+    t = PersistenceTracker(window=5, min_hits=2)
+    t.update([_f(300e6)])
+    t.update([_f(300e6)])
+    assert t.count_for(_f(300e6)) == HitCount(hits=2, sweeps=2, min_hits=2)
+    assert t.count_for(_f(300e6)) == HitCount(hits=2, sweeps=2, min_hits=2)
+    assert t.sweeps_seen == 2
