@@ -1,0 +1,26 @@
+name: Hardware (manual, self-hosted)
+
+# Bench validation on a Pi + SDR rig. Never runs on GitHub-hosted runners:
+# dispatch manually from a self-hosted runner with QUIETROOM_HW=1 and a
+# HackRF (and/or RTL-SDR) attached.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hw-smoke:
+    runs-on: [self-hosted, quietroom-hw]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Hardware smoke tests
+        env:
+          QUIETROOM_HW: "1"
+        run: uv run pytest tests/test_soak_scaffold.py -v
+      - name: Simulated soak (software loop)
+        run: uv run python tools/soak.py 200
