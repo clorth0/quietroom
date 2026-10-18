@@ -12,6 +12,7 @@ from quietroom.engine.persistence import PersistenceTracker, confirm_findings
 from quietroom.engine.pipeline import sweep_findings
 from quietroom.engine.plan import SweepPlan
 from quietroom.engine.spectrum import Candidate, DetectorResult, PowerSpectrum
+from quietroom.radio.device import Device
 from quietroom.radio.recorded import demo_device
 from quietroom.scan import investigate
 
@@ -121,3 +122,68 @@ def test_assembly_interface_scores_and_labels_in_one_place():
     assert list(f.breakdown) == ["snr", "catalog", "signatures"]
     assert scoring.band_label_for(98_500_000.0) == "FM broadcast"
     assert scoring.band_label_for(380_000_000.0) == "unknown"
+
+
+# --- Investigate re-score must keep the persistence annotation (#13) ---
+
+class _NoiseDevice(Device):
+    """Device whose IQ is noise, so the audio detector contributes 0."""
+
+    def __init__(self):
+        import numpy as np
+
+        self._rng = np.random.default_rng(1)
+
+    def probe(self):
+        from quietroom.radio.device import DeviceInfo
+
+        return DeviceInfo("n", "n", "n")
+
+    def sweep(self, *a, **k):
+        yield from ()
+
+    def capture_iq(self, center_hz, sample_rate, n_samples):
+        import numpy as np
+
+        noise = self._rng.normal(size=n_samples) + 1j * self._rng.normal(size=n_samples)
+        return noise.astype(np.complex64)
+
+
+def test_investigate_with_persistence_equals_initial_when_audio_adds_nothing():
+    tracker = PersistenceTracker(window=5, min_hits=2)
+    tracker.update(_planted())
+    (initial,) = tracker.update(_planted())
+    inv = investigate(
+        _NoiseDevice(), initial.candidate, play_record=_loopback, duration_s=0.05,
+        persistence=tracker.count_for(initial),
+    )
+    # Identical sweep + annotation inputs: the whole finding, not just
+    # "not lower" -- audio contributed 0, so nothing may change.
+    assert inv.breakdown["audio"] == 0.0
+    assert inv.score == initial.score
+    assert inv.raw_score == initial.raw_score
+    assert inv.band_label == initial.band_label
+    assert inv.breakdown == {**initial.breakdown, "audio": 0.0}
+    assert inv.reasons == initial.reasons
+
+
+def test_assemble_with_persistence_equals_annotated_fresh_finding():
+    tracker = PersistenceTracker(window=5, min_hits=2)
+    tracker.update(_planted())
+    (initial,) = tracker.update(_planted())
+    via_seam = scoring.assemble_finding(
+        initial.candidate, persistence=tracker.count_for(initial),
+    )
+    assert via_seam == initial
+
+
+def test_apply_persistence_twice_does_not_double_count():
+    tracker = PersistenceTracker(window=5, min_hits=2)
+    tracker.update(_planted())
+    (initial,) = tracker.update(_planted())
+    again = scoring.apply_persistence(initial, 2, 2, 2)
+    assert again == initial
+    assert again.breakdown["persistence"] == 10.0
+    assert [r for r in again.reasons if "persistent" in r] == [
+        "persistent: seen in 2/2 sweeps"
+    ]

@@ -129,3 +129,44 @@ def test_sweep_payloads_keep_exact_json_wire_format():
         "freq_hz", "freq_mhz", "score", "raw_score", "band", "reasons",
     }
     assert json.loads(json.dumps(findings[0])) == findings[0]
+
+
+def test_investigate_preserves_persistence_after_confirmation():
+    import numpy as np
+
+    s = ScanSession(streaming_demo_device(n_clean=3),
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000,
+                    bin_hz=1_000_000, overview=True)
+    s.capture_baseline(cycles=3)
+    s.sweep_once()
+    _, second = s.sweep_once()
+    payload = s.investigate(
+        308_000_000.0,
+        play_record=lambda sig, fs: np.asarray(sig, float),
+        duration_s=0.25,
+    )
+    # Audio adds 50 raw on top of the annotated sweep score; the
+    # persistence bonus (+10 raw, already in second) must not be lost.
+    assert any("persistent: seen in 2/2 sweeps" in r for r in payload["reasons"])
+    assert payload["raw_score"] == second[0]["raw_score"] + 50.0
+    assert payload["score"] > second[0]["score"]
+
+
+def test_investigate_twice_does_not_double_count_persistence():
+    import numpy as np
+
+    s = ScanSession(streaming_demo_device(n_clean=3),
+                    f_start_hz=300_000_000, f_stop_hz=320_000_000,
+                    bin_hz=1_000_000, overview=True)
+    s.capture_baseline(cycles=3)
+    s.sweep_once()
+    s.sweep_once()
+    kwargs = dict(
+        play_record=lambda sig, fs: np.asarray(sig, float), duration_s=0.25,
+    )
+    first = s.investigate(308_000_000.0, **kwargs)
+    second = s.investigate(308_000_000.0, **kwargs)
+    assert second == first
+    assert [r for r in second["reasons"] if "persistent" in r] == [
+        "persistent: seen in 2/2 sweeps"
+    ]
