@@ -15,3 +15,6 @@ MAX_HZ = 6_000_000_000
 # bugs (<= the 50 kHz narrowband threshold) and lowers per-bin noise ~16 dB vs
 # 1 MHz, so narrow carriers stand out.
 DEFAULT_BIN_HZ = 25_000
+
+RTL_MIN_HZ = 500_000
+RTL_MAX_HZ = 1_750_000_000

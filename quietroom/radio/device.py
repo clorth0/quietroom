@@ -29,6 +29,12 @@ class Device(ABC):
     def probe(self) -> DeviceInfo | None:
         """Return device info, or None if no device is present."""
 
+    def capabilities(self):
+        """RadioCapabilities for this device (default: conservative generic)."""
+        from quietroom.radio.capabilities import RadioCapabilities
+        from quietroom.radio.limits import MAX_HZ, MIN_HZ
+        return RadioCapabilities(type(self).__name__, MIN_HZ, MAX_HZ)
+
     @abstractmethod
     def sweep(
         self, plan: SweepPlan, cycles: int = 1
