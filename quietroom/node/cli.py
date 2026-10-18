@@ -35,7 +35,47 @@ def main(argv=None):
         print(json.dumps(cfg.to_dict(), indent=2))
         return 0
     events = []
-    svc = MonitorService(cfg, _device(a.demo), sink=events.append)
+    store = None
+    if cfg.store_path:
+        from quietroom.store import Store
+
+        store = Store(cfg.store_path)
+        store.upsert_node(cfg.node_id, cfg.site, cfg.floor, cfg.room)
+    alert_engine = None
+    notifiers = []
+    if cfg.webhook_url:
+        import os
+        from quietroom.alerts import AlertEngine, AlertRule, WebhookNotifier
+
+        alert_engine = AlertEngine(
+            [AlertRule(min_score=cfg.alert_min_score, cooldown_s=cfg.alert_cooldown_s)]
+        )
+        notifiers = [
+            WebhookNotifier(cfg.webhook_url, secret=os.environ.get("QUIETROOM_WEBHOOK_SECRET")).send
+        ]
+    fleet = None
+    if cfg.fleet_base_url:
+        import os
+        from quietroom.fleet import FleetClient
+
+        fleet = FleetClient(
+            cfg.fleet_base_url,
+            token=os.environ.get("QUIETROOM_CENTRAL_TOKEN"),
+            outbox_path=(cfg.store_path + ".fleet-outbox") if cfg.store_path else ":memory:",
+        )
+    from quietroom.node.watchdog import SdNotifier
+
+    svc = MonitorService(
+        cfg,
+        _device(a.demo),
+        sink=events.append,
+        store=store,
+        alert_engine=alert_engine,
+        notifiers=notifiers,
+        fleet=fleet,
+        fleet_interval_s=cfg.fleet_heartbeat_s,
+        notifier=SdNotifier(),
+    )
     if a.once:
         svc.start()
         r = svc.tick()

@@ -34,3 +34,15 @@ stop = "6G"
 bin = "1M"
 interval_s = 3600
 priority = 1
+
+[store]
+path = "/var/lib/quietroom/quietroom.db"
+
+[alerts]
+min_score = 80
+cooldown_s = 3600
+webhook_url = ""          # set to enable webhook alerts (secret via QUIETROOM_WEBHOOK_SECRET)
+
+[fleet]
+base_url = ""             # set to enable central upload (token via QUIETROOM_CENTRAL_TOKEN)
+heartbeat_s = 60
