@@ -34,6 +34,33 @@ def test_empty_returns_zero():
     assert best_lag_correlation(np.array([]), np.array([]), max_lag=10) == 0.0
 
 
+def test_aligned_sine_scores_high_at_zero_lag():
+    # Migrated from the former zero-lag correlation cases: an aligned
+    # scaled copy must score high even with no lag window to search.
+    t = np.linspace(0, 1, 500)
+    audio = np.sin(2 * np.pi * 5 * t)
+    rf_envelope = 3.0 * audio + 0.01 * np.random.default_rng(0).normal(size=t.size)
+    assert best_lag_correlation(rf_envelope, audio, max_lag=0) > 0.9
+
+
+def test_inverted_aligned_scores_high():
+    # Correlation is a magnitude: an inverted aligned copy is still a match.
+    t = np.linspace(0, 1, 500)
+    audio = np.sin(2 * np.pi * 5 * t)
+    assert best_lag_correlation(-audio, audio, max_lag=0) > 0.99
+
+
+def test_identical_noise_scores_near_one_at_zero_lag():
+    # Pinpoints zero lag: white noise decorrelates in one sample, so an
+    # off-by-one in the lag window drops this from ~1 to near zero.
+    noise = np.random.default_rng(2).normal(size=8000)
+    assert best_lag_correlation(noise, noise, max_lag=0) > 0.99
+
+
+def test_constant_inputs_return_zero():
+    assert best_lag_correlation(np.ones(100), np.ones(100), max_lag=10) == 0.0
+
+
 def _chirp_at(fs, delay_s, dur=1.0, f0=500.0, f1=3000.0):
     t = np.arange(int(dur * fs)) / fs - delay_s
     k = (f1 - f0) / dur
