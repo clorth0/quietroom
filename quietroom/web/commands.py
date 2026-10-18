@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, assert_never
 
 from quietroom.bands import REGIONS
+from quietroom.engine.plan import parse_freq_hz
 from quietroom.radio.hackrf import MAX_HZ, MIN_HZ
 from quietroom.web.token import request_token_accepted
 
@@ -18,6 +19,13 @@ class Connect:
 @dataclass(frozen=True)
 class SetRegion:
     region: str
+
+
+@dataclass(frozen=True)
+class SetSweep:
+    start_hz: int
+    stop_hz: int
+    bin_hz: int
 
 
 @dataclass(frozen=True)
@@ -40,7 +48,7 @@ class Stop:
     pass
 
 
-Command = Connect | SetRegion | CaptureBaseline | Investigate | Start | Stop
+Command = Connect | SetRegion | SetSweep | CaptureBaseline | Investigate | Start | Stop
 
 
 @dataclass
@@ -65,6 +73,14 @@ def parse_command(event: str, data: object) -> Command | str:
         if region not in REGIONS:
             return f"unknown region; choose from {sorted(REGIONS)}"
         return SetRegion(region)
+    if event == "set_sweep":
+        fields = []
+        for key in ("start", "stop", "bin"):
+            value = _plan_frequency(payload.get(key))
+            if isinstance(value, str):
+                return value
+            fields.append(value)
+        return SetSweep(*fields)
     if event == "capture_baseline":
         cycles = _whole_number(payload.get("cycles", 5))
         if cycles is None or not 1 <= cycles <= 30:
@@ -102,6 +118,14 @@ def _apply(cmd: Command, ctx: CommandContext) -> object:
             return None
         ctx.app.config["RUNNING"] = True
         ctx.socketio.start_background_task(_sweep_loop, ctx)
+        return None
+    if isinstance(cmd, SetSweep):
+        try:
+            plan = session.set_plan(cmd.start_hz, cmd.stop_hz, cmd.bin_hz)
+        except ValueError as exc:
+            ctx.emit("error", {"message": str(exc)})
+            return None
+        ctx.emit("sweep_plan", plan)
         return None
     if isinstance(cmd, SetRegion):
         session.set_region(cmd.region)
@@ -149,6 +173,22 @@ def _connect_allowed(auth: object, token: str | None) -> bool:
     """Socket policy: the shared acceptance, plus the auth-dict presentation."""
     given = auth.get("token") if isinstance(auth, dict) else None
     return request_token_accepted(token, auth_token=given)
+
+
+def _plan_frequency(raw: object) -> int | str:
+    """One start/stop/bin field: Hz number, or CLI syntax via parse_freq_hz."""
+    if isinstance(raw, bool):
+        return "invalid frequency"
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float) and raw.is_integer():
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return parse_freq_hz(raw)
+        except ValueError as exc:
+            return str(exc)
+    return "invalid frequency"
 
 
 def _whole_number(raw: object) -> int | None:

@@ -15,6 +15,13 @@
     <button id="baseline">Capture baseline</button>
     <button id="start">Start sweep</button>
     <button id="stop">Stop</button>
+    <label for="sweep-start">Start</label>
+    <input id="sweep-start" type="text" value="{{ sweep_start }}" size="8">
+    <label for="sweep-stop">Stop</label>
+    <input id="sweep-stop" type="text" value="{{ sweep_stop }}" size="8">
+    <label for="sweep-bin">Bin</label>
+    <input id="sweep-bin" type="text" value="{{ sweep_bin }}" size="6">
+    <button id="sweep-apply">Set sweep</button>
     <label for="region">Region</label>
     <select id="region">
       {% for r in regions %}<option value="{{ r }}"{% if r == region %} selected{% endif %}>{{ r | upper }}</option>{% endfor %}
