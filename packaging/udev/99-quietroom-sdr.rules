@@ -1,0 +1,4 @@
+# HackRF One (Great Scott Gadgets) — allow the quietroom service user access.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="6089", MODE="0660", GROUP="quietroom", TAG+="systemd"
+# RTL-SDR (Realtek) — item 7 tier.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="2838", MODE="0660", GROUP="quietroom", TAG+="systemd"
