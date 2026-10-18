@@ -9,26 +9,6 @@ from quietroom.engine.score import assemble_finding
 from quietroom.engine.spectrum import Baseline, Finding, PowerSpectrum
 
 
-def _spacing_hz(freqs) -> float:
-    values = [float(f) for f in freqs]
-    if len(values) < 2:
-        raise ValueError("spectrum needs at least two bins to check against the plan")
-    step = values[1] - values[0]
-    for index in range(1, len(values)):
-        if abs((values[index] - values[index - 1]) - step) > 1.0:
-            raise ValueError("spectrum bin spacing is not uniform")
-    return step
-
-
-def _require_spacing(freqs, plan: SweepPlan) -> None:
-    spacing = _spacing_hz(freqs)
-    if abs(spacing - plan.bin_hz) > 1.0:
-        raise ValueError(
-            f"spectrum bin spacing {spacing:.0f} Hz does not match "
-            f"the plan bin {plan.bin_hz} Hz"
-        )
-
-
 def sweep_findings(
     live: PowerSpectrum,
     baseline: Baseline,
@@ -45,8 +25,8 @@ def sweep_findings(
     microphone capture and is triggered on demand per candidate by the
     radio/web layer, which re-scores through the same seam.
     """
-    _require_spacing(live.freqs_hz, plan)
-    _require_spacing(baseline.freqs_hz, plan)
+    live.grid.require_bin_hz(plan.bin_hz)
+    baseline.grid.require_bin_hz(plan.bin_hz)
     findings: list[Finding] = []
     for candidate in find_candidates(live, baseline, k=k):
         findings.append(assemble_finding(candidate, bands))
