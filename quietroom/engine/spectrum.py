@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from quietroom.engine.grid import SpectrumGrid
+
 
 @dataclass
 class PowerSpectrum:
@@ -12,6 +14,11 @@ class PowerSpectrum:
     freqs_hz: np.ndarray
     power_dbm: np.ndarray
     timestamp: float
+
+    @property
+    def grid(self) -> SpectrumGrid:
+        """The grid this spectrum is on; spacing/alignment live there."""
+        return SpectrumGrid.from_freqs(self.freqs_hz)
 
 
 @dataclass
@@ -22,6 +29,11 @@ class Baseline:
     std_dbm: np.ndarray
     sweep_count: int
     created_at: float
+
+    @property
+    def grid(self) -> SpectrumGrid:
+        """The grid this baseline is on; spacing/alignment live there."""
+        return SpectrumGrid.from_freqs(self.freqs_hz)
 
 
 @dataclass
