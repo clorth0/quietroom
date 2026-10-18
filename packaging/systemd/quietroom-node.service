@@ -1,0 +1,27 @@
+[Unit]
+Description=Quietroom RF monitoring node
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/quietroom-node --config /etc/quietroom/config.toml
+User=quietroom
+Group=quietroom
+Restart=on-failure
+RestartSec=10
+WatchdogSec=120
+NotifyAccess=main
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/quietroom
+StateDirectory=quietroom
+ConfigurationDirectory=quietroom
+MemoryMax=512M
+CPUQuota=200%
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
