@@ -151,6 +151,12 @@ class HackRFDevice(Device):
     def probe(self) -> DeviceInfo | None:
         return probe_hackrf()
 
+    def capabilities(self):
+        from quietroom.radio.capabilities import RadioCapabilities
+        return RadioCapabilities("HackRF One", MIN_HZ, MAX_HZ, 20_000_000,
+                                 tx_capable=True, calibrated=False,
+                                 notes="8-bit; TX hardware present, unused")
+
     def sweep(
         self, plan: SweepPlan, cycles: int = 1
     ) -> Iterator[PowerSpectrum]:
