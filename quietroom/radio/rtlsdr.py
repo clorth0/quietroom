@@ -14,10 +14,11 @@ import numpy as np
 from quietroom.engine.spectrum import PowerSpectrum
 from quietroom.radio.capabilities import RadioCapabilities, check_plan
 from quietroom.radio.device import Device, DeviceError, DeviceInfo
+from quietroom.radio.limits import RTL_MAX_HZ as MAX_HZ
+from quietroom.radio.limits import RTL_MIN_HZ as MIN_HZ
 
 RTL_POWER = shutil.which("rtl_power") or "rtl_power"
 RTL_SDR = shutil.which("rtl_sdr") or "rtl_sdr"
-MIN_HZ, MAX_HZ = 500_000, 1_750_000_000
 
 
 def build_rtl_power_cmd(f_start_hz, f_stop_hz, bin_hz, gain=40):

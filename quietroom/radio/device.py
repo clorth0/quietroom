@@ -32,7 +32,8 @@ class Device(ABC):
     def capabilities(self):
         """RadioCapabilities for this device (default: conservative generic)."""
         from quietroom.radio.capabilities import RadioCapabilities
-        return RadioCapabilities(type(self).__name__, 1_000_000, 6_000_000_000)
+        from quietroom.radio.limits import MAX_HZ, MIN_HZ
+        return RadioCapabilities(type(self).__name__, MIN_HZ, MAX_HZ)
 
     @abstractmethod
     def sweep(
