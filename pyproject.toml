@@ -23,6 +23,7 @@ dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
 [project.scripts]
 quietroom = "quietroom.cli:main"
 quietroom-web = "quietroom.web.app:main"
+quietroom-node = "quietroom.node.cli:main"
 
 [build-system]
 requires = ["hatchling"]

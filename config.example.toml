@@ -1,0 +1,36 @@
+# Copy to /etc/quietroom/config.toml and edit. Frequencies: Hz ints or "300M"/"2.4G"/"100k".
+[node]
+id = "floor3-east"
+site = "hq"
+floor = "3"
+room = "east offices"
+region = "us"
+threshold_k = 4.0
+baseline_cycles = 5
+poll_s = 1.0
+
+[[segments]]
+name = "covert-uhf"
+start_hz = 300_000_000
+stop_hz = 470_000_000
+bin_hz = 25_000
+interval_s = 60
+priority = 10
+
+[[segments]]
+name = "wifi24"
+mode = "overview"
+start = "2.4G"
+stop = "2.4835G"
+bin = "100k"
+interval_s = 300
+priority = 5
+
+[[segments]]
+name = "overview"
+mode = "overview"
+start = "88M"
+stop = "6G"
+bin = "1M"
+interval_s = 3600
+priority = 1
