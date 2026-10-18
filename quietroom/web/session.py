@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from typing import TypedDict
 
 from quietroom.engine.persistence import PersistenceTracker
 from quietroom.bands import bands_for
@@ -14,7 +15,26 @@ from quietroom.scan import capture_baseline as _capture_baseline
 from quietroom.scan import investigate as _investigate
 
 
-def spectrum_payload(ps: PowerSpectrum) -> dict:
+class SpectrumPayload(TypedDict):
+    """Spectrum shape ScanSession emits to the browser (JSON: plain dict)."""
+
+    f0: float
+    f1: float
+    powers: list[float]
+
+
+class FindingPayload(TypedDict):
+    """Finding shape ScanSession emits to the browser (JSON: plain dict)."""
+
+    freq_hz: float
+    freq_mhz: float
+    score: float
+    raw_score: float
+    band: str
+    reasons: list[str]
+
+
+def spectrum_payload(ps: PowerSpectrum) -> SpectrumPayload:
     return {
         "f0": float(ps.freqs_hz[0]),
         "f1": float(ps.freqs_hz[-1]),
@@ -22,7 +42,7 @@ def spectrum_payload(ps: PowerSpectrum) -> dict:
     }
 
 
-def finding_payload(f: Finding) -> dict:
+def finding_payload(f: Finding) -> FindingPayload:
     return {
         "freq_hz": float(f.candidate.center_freq_hz),
         "freq_mhz": round(f.candidate.center_freq_hz / 1e6, 3),
@@ -73,7 +93,7 @@ class ScanSession:
             self.tracker.reset()
         return baseline.sweep_count
 
-    def sweep_once(self) -> tuple[dict, list[dict]]:
+    def sweep_once(self) -> tuple[SpectrumPayload, list[FindingPayload]]:
         spectrum = next(
             iter(self.device.sweep(self.plan, cycles=1))
         )
@@ -90,7 +110,7 @@ class ScanSession:
             self._last = {f.candidate.center_freq_hz: f for f in findings}
         return spectrum_payload(spectrum), [finding_payload(f) for f in findings]
 
-    def investigate(self, freq_hz: float, **audio_kwargs) -> dict:
+    def investigate(self, freq_hz: float, **audio_kwargs) -> FindingPayload:
         with self._lock:
             finding = self._last.get(float(freq_hz))
         if finding is None:
