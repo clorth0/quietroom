@@ -604,6 +604,22 @@ class MonitorService:
                 self.delivery_errors.pop(name, None)
             except Exception as e:  # outbox itself failed (disk, sqlite)
                 self.delivery_errors[name] = f"{type(e).__name__}: {e}"
+                continue
+            parked = getattr(ch, "last_parked", None)
+            if parked:
+                # Through sink + fleet only: the channel that parked may be the
+                # only one there is, and its trouble is what this reports.
+                self._emit(
+                    {
+                        "type": "alert_parked",
+                        "node_id": self.config.node_id,
+                        "timestamp": self.clock(),
+                        "channel": name,
+                        "parked": parked,
+                        "hint": "inspect: quietroom-node --outbox list --parked; "
+                        "retry: quietroom-node --outbox requeue --id N",
+                    }
+                )
 
     def health(self):
         return {
@@ -632,6 +648,9 @@ class MonitorService:
             },
             "alert_outbox": {
                 ch.name: ch.pending() for ch in self.notifiers if hasattr(ch, "pending")
+            },
+            "alert_parked": {
+                ch.name: ch.parked() for ch in self.notifiers if hasattr(ch, "parked")
             },
             "alert_delivery_errors": dict(self.delivery_errors),
             **(

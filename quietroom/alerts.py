@@ -206,7 +206,14 @@ _OUTBOX_COLUMNS = {
     "channel": "TEXT DEFAULT 'default'",
     "next_attempt_at": "REAL DEFAULT 0",
     "last_error": "TEXT DEFAULT ''",
+    "created_at": "REAL",
+    "last_attempt_at": "REAL DEFAULT 0",
+    "parked_at": "REAL",
+    "park_reason": "TEXT",
 }
+
+DEFAULT_MAX_ATTEMPTS = 5
+DEFAULT_MAX_AGE_S = 7 * 86400.0
 
 
 class Outbox:
@@ -218,67 +225,244 @@ class Outbox:
     `backoff_s` up to `max_backoff_s` and holds the channel until it is due,
     and with `stop_on_failure` a flush stops at the first failure, so a dead
     server costs one timeout per backoff period, not one per queued alert.
-    Nothing is dropped: rows stay until delivered.
+
+    Dead letters. A row that has failed `max_attempts` times is a *suspect*:
+    it no longer holds the channel (later rows go out past it) and is retried
+    on its own backoff after them. A suspect is *parked* (kept, never retried,
+    listed and requeued with ``quietroom-node --outbox``) only when it fails
+    again after the channel delivered something else since its previous
+    failure: proof that the message, not the relay, is the problem. An outage
+    therefore never parks anything. Independently, a row older than
+    `max_age_s` is parked as stale. 0 disables either limit.
     """
 
-    def __init__(self, path, channel="default", backoff_s=0.0, max_backoff_s=3600.0, clock=None):
-        self.db = sqlite3.connect(str(path))
+    def __init__(
+        self,
+        path,
+        channel="default",
+        backoff_s=0.0,
+        max_backoff_s=3600.0,
+        clock=None,
+        max_attempts=DEFAULT_MAX_ATTEMPTS,
+        max_age_s=DEFAULT_MAX_AGE_S,
+    ):
+        self.db = _outbox_db(path)
         self.channel = channel
         self.backoff_s = float(backoff_s)
         self.max_backoff_s = float(max_backoff_s)
         self.clock = clock or time.time
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS outbox("
-            "id INTEGER PRIMARY KEY, payload TEXT, attempts INTEGER DEFAULT 0)"
-        )
-        have = {r[1] for r in self.db.execute("PRAGMA table_info(outbox)")}
-        for col, decl in _OUTBOX_COLUMNS.items():
-            if col not in have:
-                self.db.execute(f"ALTER TABLE outbox ADD COLUMN {col} {decl}")
-        self.db.commit()
+        self.max_attempts = int(max_attempts)
+        self.max_age_s = float(max_age_s)
+        self.last_parked: list[dict] = []
+        _migrate_outbox(self.db, self.clock())
 
     def add(self, payload):
         self.db.execute(
-            "INSERT INTO outbox(payload,channel,next_attempt_at) VALUES(?,?,0)",
-            (json.dumps(payload, sort_keys=True, default=str), self.channel),
+            "INSERT INTO outbox(payload,channel,next_attempt_at,created_at) VALUES(?,?,0,?)",
+            (json.dumps(payload, sort_keys=True, default=str), self.channel, self.clock()),
         )
         self.db.commit()
 
     def pending(self):
+        """Rows still being delivered (parked rows excluded)."""
         return self.db.execute(
-            "SELECT COUNT(*) FROM outbox WHERE channel=?", (self.channel,)
+            "SELECT COUNT(*) FROM outbox WHERE channel=? AND parked_at IS NULL", (self.channel,)
         ).fetchone()[0]
+
+    def parked(self):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox WHERE channel=? AND parked_at IS NOT NULL",
+            (self.channel,),
+        ).fetchone()[0]
+
+    def _park(self, row_id, now, reason, attempts):
+        self.db.execute(
+            "UPDATE outbox SET parked_at=?, park_reason=? WHERE id=?", (now, reason, row_id)
+        )
+        self.last_parked.append(
+            {"id": row_id, "channel": self.channel, "reason": reason, "attempts": attempts}
+        )
+
+    def _last_ok(self):
+        r = self.db.execute(
+            "SELECT last_ok_at FROM outbox_channels WHERE channel=?", (self.channel,)
+        ).fetchone()
+        return r[0] if r else None
+
+    def _attempt(self, send, row, now):
+        """Try one row; True if delivered. Failure backs it off (or parks a poison)."""
+        row_id, payload, attempts, _, last_attempt = row
+        try:
+            send(json.loads(payload))
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"[:500]
+            delay = min(self.backoff_s * (2 ** int(attempts)), self.max_backoff_s)
+            self.db.execute(
+                "UPDATE outbox SET attempts=attempts+1, next_attempt_at=?, last_error=?, "
+                "last_attempt_at=? WHERE id=?",
+                (now + delay, err, now, row_id),
+            )
+            last_ok = self._last_ok()
+            if self._suspect(attempts) and last_ok is not None and last_ok > last_attempt:
+                self._park(
+                    row_id, now,
+                    f"poison: failed {int(attempts) + 1} times, still failing after the "
+                    "channel delivered other alerts",
+                    int(attempts) + 1,
+                )
+            return False
+        self.db.execute("DELETE FROM outbox WHERE id=?", (row_id,))
+        self.db.execute(
+            "INSERT INTO outbox_channels(channel,last_ok_at) VALUES(?,?) "
+            "ON CONFLICT(channel) DO UPDATE SET last_ok_at=excluded.last_ok_at",
+            (self.channel, now),
+        )
+        return True
+
+    def _suspect(self, attempts):
+        return self.max_attempts > 0 and int(attempts) >= self.max_attempts
 
     def flush(self, send, stop_on_failure=True):
         now = self.clock()
-        delivered = 0
+        self.last_parked = []
+        if self.max_age_s > 0:
+            for row_id, attempts in self.db.execute(
+                "SELECT id,attempts FROM outbox WHERE channel=? AND parked_at IS NULL"
+                " AND created_at<=? ORDER BY id",
+                (self.channel, now - self.max_age_s),
+            ).fetchall():
+                self._park(row_id, now, f"max_age: undelivered for {self.max_age_s:g} s",
+                           int(attempts))
         rows = self.db.execute(
-            "SELECT id,payload,attempts,next_attempt_at FROM outbox WHERE channel=? ORDER BY id",
+            "SELECT id,payload,attempts,next_attempt_at,last_attempt_at FROM outbox"
+            " WHERE channel=? AND parked_at IS NULL ORDER BY id",
             (self.channel,),
         ).fetchall()
+        delivered, failed = 0, False
+        suspects = [r for r in rows if self._suspect(r[2])]
         # FIFO with head-of-line backoff: if the oldest alert is still backing
         # off, the channel is backing off (it is the relay that is down, not
-        # one message), and alerts are never delivered out of order.
-        if rows and rows[0][3] > now:
-            return 0
-        rows = [r[:3] for r in rows]
-        for row_id, payload, attempts in rows:
-            try:
-                send(json.loads(payload))
-            except Exception as e:
-                delay = min(self.backoff_s * (2 ** int(attempts)), self.max_backoff_s)
-                self.db.execute(
-                    "UPDATE outbox SET attempts=attempts+1, next_attempt_at=?, last_error=? "
-                    "WHERE id=?",
-                    (now + delay, f"{type(e).__name__}: {e}"[:500], row_id),
-                )
+        # one message), and alerts are never delivered out of order. Suspects
+        # are skipped here: they have used up their right to hold the channel.
+        for row in rows:
+            if self._suspect(row[2]):
+                continue
+            if row[3] > now:
+                break
+            if self._attempt(send, row, now):
+                delivered += 1
+                continue
+            failed = True
+            if stop_on_failure:
+                break
+        # Then the suspects, oldest first, each on its own backoff; a failure
+        # stops the pass, so an outage still costs one attempt per flush.
+        if not (failed and stop_on_failure):
+            for row in suspects:
+                if row[3] > now:
+                    continue
+                if self._attempt(send, row, now):
+                    delivered += 1
+                    continue
                 if stop_on_failure:
                     break
-                continue
-            self.db.execute("DELETE FROM outbox WHERE id=?", (row_id,))
-            delivered += 1
         self.db.commit()
         return delivered
+
+
+def _outbox_db(path):
+    db = sqlite3.connect(str(path), timeout=10)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS outbox("
+        "id INTEGER PRIMARY KEY, payload TEXT, attempts INTEGER DEFAULT 0)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS outbox_channels(channel TEXT PRIMARY KEY, last_ok_at REAL)"
+    )
+    return db
+
+
+def _migrate_outbox(db, now):
+    have = {r[1] for r in db.execute("PRAGMA table_info(outbox)")}
+    for col, decl in _OUTBOX_COLUMNS.items():
+        if col not in have:
+            db.execute(f"ALTER TABLE outbox ADD COLUMN {col} {decl}")
+    # rows queued before ages were tracked count from the upgrade, not from 1970
+    db.execute("UPDATE outbox SET created_at=? WHERE created_at IS NULL", (now,))
+    db.commit()
+
+
+def _summary(p):
+    if not isinstance(p, dict):
+        return ""
+    parts = [str(p[k]) for k in ("node_id", "segment") if p.get(k)]
+    if isinstance(p.get("freq_hz"), (int, float)):
+        parts.append(f"{p['freq_hz'] / 1e6:.3f} MHz")
+    if isinstance(p.get("score"), (int, float)):
+        parts.append(f"score {p['score']:.0f}")
+    return " ".join(parts)
+
+
+def outbox_rows(path, *, channel=None, parked=None):
+    """Rows of an alert outbox file for inspection (``quietroom-node --outbox list``).
+
+    parked: None = all, True = parked only, False = still being delivered.
+    """
+    db = _outbox_db(path)
+    _migrate_outbox(db, time.time())
+    q = (
+        "SELECT id,channel,attempts,created_at,last_attempt_at,next_attempt_at,last_error,"
+        "parked_at,park_reason,payload FROM outbox WHERE 1=1"
+    )
+    args: list = []
+    if channel is not None:
+        q += " AND channel=?"
+        args.append(channel)
+    if parked is not None:
+        q += " AND parked_at IS NOT NULL" if parked else " AND parked_at IS NULL"
+    out = []
+    for r in db.execute(q + " ORDER BY id", args):
+        try:
+            payload = json.loads(r[9])
+        except (TypeError, ValueError):
+            payload = r[9]
+        out.append(
+            {
+                "id": r[0], "channel": r[1], "attempts": r[2], "created_at": r[3],
+                "last_attempt_at": r[4] or None, "next_attempt_at": r[5],
+                "last_error": r[6] or "", "parked_at": r[7], "park_reason": r[8],
+                "summary": _summary(payload), "payload": payload,
+            }
+        )
+    db.close()
+    return out
+
+
+def requeue_parked(path, *, ids=None, channel=None, now=None):
+    """Put parked rows back in line with a fresh attempt budget and age.
+
+    They keep their id, so they go out in their original order. Returns the
+    ids requeued (ids that are unknown or not parked are skipped).
+    """
+    now = time.time() if now is None else now
+    db = _outbox_db(path)
+    _migrate_outbox(db, now)
+    q, args = "SELECT id FROM outbox WHERE parked_at IS NOT NULL", []
+    if channel is not None:
+        q += " AND channel=?"
+        args.append(channel)
+    if ids is not None:
+        q += f" AND id IN ({','.join('?' * len(ids))})" if ids else " AND 0"
+        args += list(ids)
+    got = [r[0] for r in db.execute(q + " ORDER BY id", args)]
+    db.executemany(
+        "UPDATE outbox SET parked_at=NULL, park_reason=NULL, attempts=0, next_attempt_at=0,"
+        " last_attempt_at=0, created_at=? WHERE id=?",
+        [(now, i) for i in got],
+    )
+    db.commit()
+    db.close()
+    return got
 
 
 class QueuedChannel:
@@ -298,3 +482,11 @@ class QueuedChannel:
 
     def pending(self):
         return self.outbox.pending()
+
+    def parked(self):
+        return self.outbox.parked()
+
+    @property
+    def last_parked(self):
+        """Rows the most recent flush parked: id, channel, reason, attempts (no payload)."""
+        return list(self.outbox.last_parked)
