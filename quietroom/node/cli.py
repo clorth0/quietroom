@@ -5,10 +5,12 @@ import argparse
 import json
 import os
 import ssl
+import sys
+import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from quietroom.config import FleetConfig, NodeConfig, default_config, load_config
+from quietroom.config import FleetConfig, NodeConfig, default_config, load_config, parse_freq
 from quietroom.node.service import MonitorService
 
 if TYPE_CHECKING:
@@ -153,6 +155,69 @@ def build_alerting(cfg, env):
     return engine, channels
 
 
+FORCE_WARNING = (
+    "WARNING: --force re-learns this segment even while an incident is active.\n"
+    "  Whatever is transmitting right now - including a planted device - becomes part\n"
+    "  of the baseline and stops being reported by live sweeps. It stays flagged only\n"
+    "  as divergence from the anchor baseline, and automatic refreshes stay held,\n"
+    "  until you accept it with --promote-anchor. The override is recorded in the\n"
+    "  baseline's version history and sent to central as a 'control' event."
+)
+
+_WAIT_EXIT = {"done": 0, "failed": 1, "refused": 2}
+
+
+def queue_control(cfg: NodeConfig, a: argparse.Namespace) -> int:
+    """Queue an operator command for the running node; optionally wait for it."""
+    command, segment = next(
+        (c, getattr(a, attr))
+        for c, attr in (
+            ("rebaseline", "rebaseline"), ("ack", "ack"), ("promote-anchor", "promote_anchor")
+        )
+        if getattr(a, attr)
+    )
+    if not cfg.store_path:
+        raise SystemExit(
+            f"--{command} needs a [store] path: the running node picks requests up from its store"
+        )
+    seg = next((s for s in cfg.segments if s.name == segment), None)
+    if seg is None:
+        names = ", ".join(s.name for s in cfg.segments)
+        raise SystemExit(f"unknown segment {segment!r} (configured: {names})")
+    if not seg.enabled:
+        raise SystemExit(f"segment {segment!r} is disabled in the config")
+    args: dict[str, object] = {"note": a.note or ""}
+    if command == "rebaseline":
+        args["force"] = bool(a.force)
+    if command == "ack" and a.freq is not None:
+        try:
+            args["freq_hz"] = parse_freq(a.freq)
+        except ValueError as e:
+            raise SystemExit(f"--freq: {e}") from e
+    if a.force:
+        print(FORCE_WARNING, file=sys.stderr)
+    from quietroom.store import Store
+
+    store = Store(cfg.store_path)
+    rid = store.request_control(cfg.node_id, segment, command, args)
+    print(json.dumps(store.control_request(rid)), flush=True)
+    if not a.wait:
+        return 0
+    deadline = time.monotonic() + a.wait
+    while time.monotonic() < deadline:
+        req = store.control_request(rid)
+        if req is not None and req["status"] != "pending":
+            print(json.dumps(req))
+            return _WAIT_EXIT.get(req["status"], 1)
+        time.sleep(0.1)
+    print(
+        f"request {rid} still pending after {a.wait:g}s: is quietroom-node running "
+        f"with store {cfg.store_path}? It stays queued and is applied on the node's next tick.",
+        file=sys.stderr,
+    )
+    return 3
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="quietroom-node", description="Quietroom unattended monitoring node"
@@ -170,7 +235,40 @@ def main(argv=None):
         action="store_true",
         help="capture baselines, run one tick, print events as JSON lines",
     )
+    ctl = p.add_argument_group(
+        "operator commands",
+        "Queued in the node's store and applied by the running quietroom-node on its next "
+        "tick (it owns the radio). Run as the service user.",
+    )
+    one = ctl.add_mutually_exclusive_group()
+    one.add_argument(
+        "--rebaseline", metavar="SEGMENT",
+        help="re-learn SEGMENT's baseline now; refused while an incident holds learning",
+    )
+    one.add_argument(
+        "--ack", metavar="SEGMENT",
+        help="incident resolved: release SEGMENT's learning hold early (one emitter with "
+        "--freq, else all); an emitter still on air re-freezes it on the next sweep",
+    )
+    one.add_argument(
+        "--promote-anchor", metavar="SEGMENT",
+        help="accept SEGMENT's current baseline as its long-term anchor (reference)",
+    )
+    ctl.add_argument(
+        "--force", action="store_true",
+        help="with --rebaseline: override an active incident (learns it; see warning)",
+    )
+    ctl.add_argument("--freq", help="with --ack: the emitter frequency, e.g. 308M")
+    ctl.add_argument("--note", help="free text recorded with the request (audit trail)")
+    ctl.add_argument(
+        "--wait", type=float, default=0.0, metavar="SECONDS",
+        help="wait for the node to apply it; exit 0 done, 1 failed, 2 refused, 3 timeout",
+    )
     a = p.parse_args(argv)
+    if a.force and not a.rebaseline:
+        p.error("--force only applies to --rebaseline")
+    if a.freq is not None and not a.ack:
+        p.error("--freq only applies to --ack")
     cfg = load_config(a.config) if a.config else default_config()
     if a.check_config:
         print(json.dumps(cfg.to_dict(), indent=2))
@@ -182,6 +280,8 @@ def main(argv=None):
             raise SystemExit("--print-identity needs [fleet] identity_path (or a [store] path)")
         print(NodeIdentity.load_or_create(cfg.fleet.identity_path).node_id)
         return 0
+    if a.rebaseline or a.ack or a.promote_anchor:
+        return queue_control(cfg, a)
     events = []
     store = None
     if cfg.store_path:
@@ -199,7 +299,8 @@ def main(argv=None):
     svc = MonitorService(
         cfg,
         _device(a.demo, cfg),
-        sink=events.append,
+        # Only --once prints events; a daemon keeping every event would grow forever.
+        sink=events.append if a.once else None,
         store=store,
         alert_engine=alert_engine,
         notifiers=notifiers,

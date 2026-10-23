@@ -28,7 +28,16 @@ CREATE TABLE IF NOT EXISTS findings(
  freq_hz REAL, score REAL, raw_score REAL, band TEXT, reasons TEXT);
 CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id,timestamp);
 CREATE INDEX IF NOT EXISTS idx_sweeps_node ON sweeps(node_id,timestamp);
+CREATE TABLE IF NOT EXISTS baseline_anchors(
+ id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, fingerprint TEXT, version INTEGER,
+ set_at REAL, reason TEXT, detail TEXT DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS control_requests(
+ id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, command TEXT, args TEXT DEFAULT '{}',
+ requested_at REAL, status TEXT DEFAULT 'pending', result TEXT DEFAULT '{}', done_at REAL);
+CREATE INDEX IF NOT EXISTS idx_control_pending ON control_requests(node_id,status);
 """
+
+CONTROL_COMMANDS = ("rebaseline", "ack", "promote-anchor")
 
 # Columns added after the first schema shipped; applied with ALTER TABLE so an
 # existing node database upgrades in place. Pre-policy rows read back with an
@@ -169,6 +178,129 @@ class Store:
             (node_id, segment, min_score),
         ).fetchone()
         return None if r["t"] is None else float(r["t"])
+
+    def incident_hits(self, node_id, segment, min_score, since):
+        """(timestamp, freq_hz) of every finding scoring >= min_score at or after `since`."""
+        return [
+            (float(r["timestamp"]), None if r["freq_hz"] is None else float(r["freq_hz"]))
+            for r in self.db.execute(
+                "SELECT timestamp,freq_hz FROM findings WHERE node_id=? AND segment=?"
+                " AND score>=? AND timestamp>=? ORDER BY timestamp",
+                (node_id, segment, min_score, since),
+            )
+        ]
+
+    # --- anchor (long-lived reference) baselines ----------------------------
+    # Append-only: the newest row per (node, segment, front-end fingerprint) is
+    # the anchor; older rows are the audit trail of promotions.
+
+    def set_anchor(self, node_id, segment, fingerprint, version, *, set_at, reason, detail=None):
+        self.db.execute(
+            "INSERT INTO baseline_anchors(node_id,segment,fingerprint,version,set_at,reason,detail)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (node_id, segment, fingerprint, int(version), set_at, reason,
+             json.dumps(detail or {}, sort_keys=True, default=str)),
+        )
+        self.db.commit()
+
+    def anchor(self, node_id, segment, fingerprint):
+        r = self.db.execute(
+            "SELECT version,set_at,reason,detail FROM baseline_anchors"
+            " WHERE node_id=? AND segment=? AND fingerprint=? ORDER BY id DESC LIMIT 1",
+            (node_id, segment, fingerprint),
+        ).fetchone()
+        if r is None:
+            return None
+        return {
+            "version": int(r["version"]),
+            "set_at": float(r["set_at"]),
+            "reason": r["reason"],
+            "detail": json.loads(r["detail"] or "{}"),
+        }
+
+    def earliest_version(self, node_id, segment, fingerprint):
+        """Oldest stored baseline version captured under this front end, or None."""
+        r = self.db.execute(
+            "SELECT MIN(version) v FROM baselines WHERE node_id=? AND segment=? AND fingerprint=?",
+            (node_id, segment, fingerprint),
+        ).fetchone()
+        return None if r["v"] is None else int(r["v"])
+
+    # --- operator control requests ------------------------------------------
+    # The running node owns the radio and its in-memory state, so operator
+    # commands (quietroom-node --rebaseline/--ack/--promote-anchor) are queued
+    # here and applied by the daemon on its next tick. Rows are kept as the
+    # audit trail.
+
+    def request_control(self, node_id, segment, command, args=None, *, now=None):
+        if command not in CONTROL_COMMANDS:
+            raise ValueError(f"unknown control command {command!r}")
+        cur = self.db.execute(
+            "INSERT INTO control_requests(node_id,segment,command,args,requested_at)"
+            " VALUES(?,?,?,?,?)",
+            (node_id, segment, command, json.dumps(args or {}, sort_keys=True),
+             time.time() if now is None else now),
+        )
+        self.db.commit()
+        return int(cur.lastrowid or 0)
+
+    def _control_row(self, r):
+        return {
+            "id": int(r["id"]),
+            "node_id": r["node_id"],
+            "segment": r["segment"],
+            "command": r["command"],
+            "args": json.loads(r["args"] or "{}"),
+            "requested_at": float(r["requested_at"]),
+            "status": r["status"],
+            "result": json.loads(r["result"] or "{}"),
+            "done_at": None if r["done_at"] is None else float(r["done_at"]),
+        }
+
+    def pending_controls(self, node_id):
+        return [
+            self._control_row(r)
+            for r in self.db.execute(
+                "SELECT * FROM control_requests WHERE node_id=? AND status='pending' ORDER BY id",
+                (node_id,),
+            )
+        ]
+
+    def control_request(self, request_id):
+        r = self.db.execute(
+            "SELECT * FROM control_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        return None if r is None else self._control_row(r)
+
+    def finish_control(self, request_id, status, result, *, now=None):
+        self.db.execute(
+            "UPDATE control_requests SET status=?, result=?, done_at=? WHERE id=?",
+            (status, json.dumps(result, sort_keys=True, default=str),
+             time.time() if now is None else now, request_id),
+        )
+        self.db.commit()
+
+    def applied_acks(self, node_id, segment, since):
+        """(requested_at, freq_hz or None) releases the node applied, requested >= since.
+
+        A done ``ack`` releases its ``freq_hz`` (None = every emitter); a done
+        ``promote-anchor`` releases each emitter it accepted (``accepted_hz``).
+        """
+        out = []
+        for r in self.db.execute(
+            "SELECT requested_at,command,args,result FROM control_requests WHERE node_id=?"
+            " AND segment=? AND command IN ('ack','promote-anchor') AND status='done'"
+            " AND requested_at>=? ORDER BY requested_at",
+            (node_id, segment, since),
+        ):
+            at = float(r["requested_at"])
+            if r["command"] == "ack":
+                f = json.loads(r["args"] or "{}").get("freq_hz")
+                out.append((at, None if f is None else float(f)))
+            else:
+                out += [(at, float(f)) for f in json.loads(r["result"] or "{}").get(
+                    "accepted_hz", [])]
+        return out
 
     def baseline_versions(self, node_id, segment):
         return [

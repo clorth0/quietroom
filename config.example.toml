@@ -49,6 +49,10 @@ drift_changed_fraction = 0.10  # ... or this fraction of bins moved > 6 dB
 incident_hold_s = 3600    # keep learning frozen this long after the last hit
 # freeze_score = 80       # defaults to [alerts].min_score
 invalidate_on_fingerprint = true  # plan / gains / radio serial / antenna changed
+# Every refresh is also checked against the segment's long-lived *anchor*
+# baseline, so slow creep cannot be learned a few dB at a time. Operator
+# commands (--rebaseline [--force], --ack, --promote-anchor): see
+# packaging/baseline-operations.md.
 
 [store]
 path = "/var/lib/quietroom/quietroom.db"
