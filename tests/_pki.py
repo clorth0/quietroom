@@ -38,6 +38,7 @@ def make_ca(tmp: Path, cn: str) -> CA:
         .not_valid_before(_now() - datetime.timedelta(minutes=5))
         .not_valid_after(_now() + datetime.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .add_extension(
             x509.KeyUsage(
                 digital_signature=True,
@@ -84,6 +85,12 @@ def issue(
         .not_valid_before(_now() - datetime.timedelta(minutes=5))
         .not_valid_after(_now() + datetime.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        # Python 3.13+ sets VERIFY_X509_STRICT, which requires SKI/AKI.
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.key.public_key()),
+            critical=False,
+        )
         .add_extension(
             x509.ExtendedKeyUsage(
                 [ExtendedKeyUsageOID.SERVER_AUTH if server else ExtendedKeyUsageOID.CLIENT_AUTH]
