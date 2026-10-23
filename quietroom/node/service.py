@@ -9,7 +9,7 @@ while a segment has an active incident.
 from __future__ import annotations
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 from quietroom.bands import bands_for
 from quietroom.config import SegmentConfig
 from quietroom.engine.baseline import build_baseline, drift_report
@@ -28,6 +28,15 @@ from quietroom.radio.device import DeviceError
 from quietroom.store import BaselineMeta
 
 
+class FleetUplink(Protocol):
+    """What the service needs from a fleet client (quietroom.fleet.FleetClient)."""
+
+    def send_events(self, node_id: str, events: list[dict[str, Any]]) -> bool: ...
+    def send_heartbeat(self, payload: dict[str, Any]) -> bool: ...
+    def flush(self) -> int: ...
+    def pending(self) -> int: ...
+
+
 @dataclass
 class TickResult:
     segments_run: list = field(default_factory=list)
@@ -44,10 +53,11 @@ class MonitorService:
         store=None,
         alert_engine=None,
         notifiers=(),
-        fleet=None,
+        fleet: FleetUplink | None = None,
         fleet_interval_s=60.0,
         notifier=None,
         clock=None,
+        fleet_warnings=(),
     ) -> None:
         self.config = config
         self.device = device
@@ -57,6 +67,7 @@ class MonitorService:
         self.notifiers = list(notifiers)
         self.fleet = fleet
         self.fleet_interval_s = fleet_interval_s
+        self.fleet_warnings = list(fleet_warnings)
         self.notifier = notifier
         self._last_heartbeat = 0.0
         self.delivery_errors: dict[str, str] = {}
@@ -242,6 +253,9 @@ class MonitorService:
     def tick(self, now=None):
         now = self.clock() if now is None else now
         result = TickResult()
+        if self.fleet is not None:
+            # Retry the store-and-forward backlog every tick, even when no segment is due.
+            self.fleet.flush()
         for seg in self.scheduler.due(now, self.last_run):
             try:
                 spectrum = next(iter(self.device.sweep(seg.plan, cycles=1)))
@@ -343,6 +357,15 @@ class MonitorService:
                 ch.name: ch.pending() for ch in self.notifiers if hasattr(ch, "pending")
             },
             "alert_delivery_errors": dict(self.delivery_errors),
+            **(
+                {
+                    "fleet_auth": getattr(self.fleet, "auth_mode", None),
+                    "fleet_pending": self.fleet.pending(),
+                    "fleet_warnings": list(self.fleet_warnings),
+                }
+                if self.fleet is not None
+                else {}
+            ),
             "device": getattr(self, "device_info", None).__dict__
             if getattr(self, "device_info", None)
             else None,

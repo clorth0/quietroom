@@ -7,8 +7,9 @@ rollback (quietroom/update.py), secret-file permission checks
 
 Operator/site responsibilities until automated:
 - Full-disk or data-partition encryption for /var/lib/quietroom (SQLite, keys).
-- Per-node credentials: unique update key and central token per node; rotate on
-  staff changes; revoke at the central server — shared fleet keys are a stopgap.
+- Per-node credentials: unique update key per node, and a per-node mTLS client
+  certificate bound to the node UUID for central (packaging/fleet-mtls.md);
+  the shared `QUIETROOM_CENTRAL_TOKEN` is a deprecated migration fallback.
 - Local web UI stays loopback-only, or behind TLS + individual accounts; never
   expose Werkzeug directly (see SECURITY.md).
 - Read-only root filesystem where the OS supports it, with /var/lib/quietroom
