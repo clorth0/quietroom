@@ -4,8 +4,78 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from quietroom.config import default_config, load_config
+import ssl
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+from quietroom.config import FleetConfig, NodeConfig, default_config, load_config
 from quietroom.node.service import MonitorService
+
+if TYPE_CHECKING:
+    from quietroom.fleet import FleetClient
+
+CENTRAL_TOKEN_ENV = "QUIETROOM_CENTRAL_TOKEN"
+
+
+def _fleet_outbox(cfg: NodeConfig) -> str:
+    return (cfg.store_path + ".fleet-outbox") if cfg.store_path else ":memory:"
+
+
+def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, list[str]]:
+    """FleetClient for ``cfg.fleet`` plus hardening warnings; SystemExit on misconfiguration.
+
+    mTLS: the node UUID (``identity_path``) must equal the UUID in the client
+    certificate, and the legacy token is never sent even if it is in the env.
+    """
+    from quietroom.fleet import (
+        FleetClient,
+        NodeIdentity,
+        cert_file_identity,
+        client_tls_context,
+    )
+    from quietroom.update import check_secret_file
+
+    fc: FleetConfig | None = cfg.fleet
+    if fc is None:
+        raise ValueError("no [fleet] base_url configured")
+    if fc.auth == "legacy-token":
+        token = env.get(CENTRAL_TOKEN_ENV, "")
+        if not token:
+            raise SystemExit(f'[fleet] auth = "legacy-token" needs ${CENTRAL_TOKEN_ENV}')
+        pinned = ssl.create_default_context(cafile=fc.ca_file) if fc.ca_file else None
+        client = FleetClient(
+            fc.base_url, token=token, outbox_path=_fleet_outbox(cfg), ssl_context=pinned
+        )
+        return client, [
+            "fleet auth is the legacy shared bearer token (deprecated): any holder can "
+            "impersonate any node; migrate to per-node mTLS"
+        ]
+    node_uuid = NodeIdentity.load_or_create(fc.identity_path).node_id
+    try:
+        ctx = client_tls_context(fc.cert_file, fc.key_file, fc.ca_file)
+    except (OSError, ValueError) as e:  # ssl.SSLError is an OSError
+        raise SystemExit(f"[fleet] cannot load mTLS material: {e}") from e
+    warnings = check_secret_file(fc.key_file)
+    try:
+        cert_uuid = cert_file_identity(fc.cert_file)
+    except NotImplementedError:
+        warnings.append("cannot self-check the client certificate UUID on this Python")
+    else:
+        if cert_uuid is None:
+            raise SystemExit(
+                f"[fleet] {fc.cert_file} carries no node UUID (SAN urn:uuid:<uuid> or UUID CN)"
+            )
+        if cert_uuid != node_uuid:
+            raise SystemExit(
+                f"[fleet] client certificate is for node {cert_uuid} but this node is "
+                f"{node_uuid} ({fc.identity_path}); issue a certificate for {node_uuid}"
+            )
+    return (
+        FleetClient(
+            fc.base_url, outbox_path=_fleet_outbox(cfg), ssl_context=ctx, node_uuid=node_uuid
+        ),
+        warnings,
+    )
 
 
 def _device(demo, cfg=None):
@@ -91,6 +161,11 @@ def main(argv=None):
     p.add_argument("--demo", action="store_true", help="run with demo device")
     p.add_argument("--check-config", action="store_true", help="validate config and exit")
     p.add_argument(
+        "--print-identity",
+        action="store_true",
+        help="print this node's fleet UUID (creating it if needed) for certificate issuance",
+    )
+    p.add_argument(
         "--once",
         action="store_true",
         help="capture baselines, run one tick, print events as JSON lines",
@@ -99,6 +174,13 @@ def main(argv=None):
     cfg = load_config(a.config) if a.config else default_config()
     if a.check_config:
         print(json.dumps(cfg.to_dict(), indent=2))
+        return 0
+    if a.print_identity:
+        from quietroom.fleet import NodeIdentity
+
+        if cfg.fleet is None or not cfg.fleet.identity_path:
+            raise SystemExit("--print-identity needs [fleet] identity_path (or a [store] path)")
+        print(NodeIdentity.load_or_create(cfg.fleet.identity_path).node_id)
         return 0
     events = []
     store = None
@@ -109,14 +191,9 @@ def main(argv=None):
         store.upsert_node(cfg.node_id, cfg.site, cfg.floor, cfg.room)
     alert_engine, notifiers = build_alerting(cfg, os.environ)
     fleet = None
-    if cfg.fleet_base_url:
-        from quietroom.fleet import FleetClient
-
-        fleet = FleetClient(
-            cfg.fleet_base_url,
-            token=os.environ.get("QUIETROOM_CENTRAL_TOKEN"),
-            outbox_path=(cfg.store_path + ".fleet-outbox") if cfg.store_path else ":memory:",
-        )
+    fleet_warnings: list[str] = []
+    if cfg.fleet is not None:
+        fleet, fleet_warnings = build_fleet(cfg, os.environ)
     from quietroom.node.watchdog import SdNotifier
 
     svc = MonitorService(
@@ -128,6 +205,7 @@ def main(argv=None):
         notifiers=notifiers,
         fleet=fleet,
         fleet_interval_s=cfg.fleet_heartbeat_s,
+        fleet_warnings=fleet_warnings,
         notifier=SdNotifier(),
     )
     if a.once:

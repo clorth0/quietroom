@@ -29,6 +29,7 @@ dev = [
 quietroom = "quietroom.cli:main"
 quietroom-web = "quietroom.web.app:main"
 quietroom-node = "quietroom.node.cli:main"
+quietroom-central = "quietroom.central:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -62,3 +63,7 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[[tool.mypy.overrides]]
+module = ["quietroom.fleet", "quietroom.central"]
+check_untyped_defs = true

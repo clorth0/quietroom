@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass, field
+from pathlib import PurePath
+from typing import Literal
 from quietroom.bands import REGIONS
 from quietroom.engine.plan import SweepPlan
 from quietroom.node.rebaseline import RebaselinePolicy
@@ -148,6 +150,73 @@ class EmailConfig:
         )
 
 
+FleetAuth = Literal["mtls", "legacy-token"]
+_FLEET_KEYS = frozenset(
+    {"base_url", "heartbeat_s", "auth", "cert_file", "key_file", "ca_file", "identity_path"}
+)
+
+
+@dataclass(frozen=True)
+class FleetConfig:
+    """``[fleet]``: central upload. Auth is per-node mTLS unless legacy is named.
+
+    ``auth = "mtls"`` (default): ``cert_file``/``key_file`` are this node's
+    client certificate (identity = its UUID, which must match ``identity_path``),
+    ``ca_file`` pins the CA that issued central's server certificate.
+    ``auth = "legacy-token"``: DEPRECATED shared bearer from the
+    ``QUIETROOM_CENTRAL_TOKEN`` env var; ``ca_file`` optionally pins central.
+    """
+
+    base_url: str
+    heartbeat_s: float = 60.0
+    auth: FleetAuth = "mtls"
+    cert_file: str = ""
+    key_file: str = ""
+    ca_file: str = ""
+    identity_path: str = ""
+
+    @classmethod
+    def from_dict(cls, d, store_path: str = "") -> FleetConfig | None:
+        if "token" in d:
+            raise ValueError(
+                "[fleet] token must not be stored in the config; use the "
+                "QUIETROOM_CENTRAL_TOKEN environment variable (legacy-token auth only)"
+            )
+        unknown = set(d) - _FLEET_KEYS
+        if unknown:
+            raise ValueError(f"[fleet] unknown keys: {sorted(unknown)}")
+        base = str(d.get("base_url", ""))
+        if not base:
+            return None
+        auth = str(d.get("auth", "mtls"))
+        if auth not in ("mtls", "legacy-token"):
+            raise ValueError(f"[fleet] auth must be 'mtls' or 'legacy-token', got {auth!r}")
+        heartbeat = float(d.get("heartbeat_s", 60.0))
+        if heartbeat <= 0:
+            raise ValueError("[fleet] heartbeat_s must be > 0")
+        files = {k: str(d.get(k, "")) for k in ("cert_file", "key_file", "ca_file")}
+        identity = str(d.get("identity_path", ""))
+        if not identity and store_path:
+            identity = str(PurePath(store_path).with_name("identity.json"))
+        if auth == "mtls":
+            missing = [k for k, v in files.items() if not v]
+            if missing:
+                raise ValueError(
+                    f"[fleet] auth = 'mtls' (the default) needs {', '.join(missing)}. "
+                    "Issue this node a client certificate for its UUID "
+                    "(quietroom-node --print-identity); to keep the deprecated shared "
+                    'bearer token meanwhile, set auth = "legacy-token" explicitly'
+                )
+            if not base.lower().startswith("https://"):
+                raise ValueError(f"[fleet] mTLS needs an https:// base_url, got {base!r}")
+            if not identity:
+                raise ValueError("[fleet] mTLS needs identity_path (or a [store] path)")
+        return cls(
+            base, heartbeat, "mtls" if auth == "mtls" else "legacy-token", identity_path=identity,
+            **files,
+        )
+
+
 @dataclass(frozen=True)
 class NodeConfig:
     node_id: str = "quietroom-node"
@@ -163,13 +232,20 @@ class NodeConfig:
     alert_min_score: float = 80.0
     alert_cooldown_s: float = 3600.0
     webhook_url: str = ""
-    fleet_base_url: str = ""
-    fleet_heartbeat_s: float = 60.0
+    fleet: FleetConfig | None = None
     # Free-text antenna label; part of the baseline fingerprint, so swapping
     # the antenna (and saying so here) invalidates the stored baseline.
     antenna: str = ""
     rebaseline: RebaselinePolicy = field(default_factory=RebaselinePolicy)
     email: EmailConfig | None = None
+
+    @property
+    def fleet_base_url(self) -> str:
+        return self.fleet.base_url if self.fleet else ""
+
+    @property
+    def fleet_heartbeat_s(self) -> float:
+        return self.fleet.heartbeat_s if self.fleet else 60.0
 
     @classmethod
     def from_dict(cls, d):
@@ -208,8 +284,7 @@ class NodeConfig:
             alert_min,
             float(alerts.get("cooldown_s", 3600.0)),
             str(alerts.get("webhook_url", "")),
-            str(fleet.get("base_url", "")),
-            float(fleet.get("heartbeat_s", 60.0)),
+            FleetConfig.from_dict(fleet, str(store.get("path", ""))),
             antenna=str(n.get("antenna", "")),
             rebaseline=rebaseline,
             email=EmailConfig.from_dict(alerts["email"]) if "email" in alerts else None,

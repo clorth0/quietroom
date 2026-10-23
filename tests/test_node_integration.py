@@ -58,6 +58,12 @@ def test_service_writes_store_alerts_and_fleet(tmp_path):
             heartbeats.append(p)
             return True
 
+        def flush(self):
+            return 0
+
+        def pending(self):
+            return 0
+
     svc = MonitorService(
         cfg(),
         Fake(),
@@ -108,6 +114,7 @@ cooldown_s=120
 webhook_url="https://example.test/hook"
 [fleet]
 base_url="https://central.test"
+auth="legacy-token"
 heartbeat_s=60
 [[segments]]
 name="uhf"
