@@ -10,6 +10,9 @@ User=quietroom
 Group=quietroom
 Restart=on-failure
 RestartSec=10
+# Exit 2 = invalid config or command line (listed in the journal): restarting
+# cannot fix it. Fix the file (check with --check-config), then start again.
+RestartPreventExitStatus=2
 WatchdogSec=120
 NotifyAccess=main
 NoNewPrivileges=true

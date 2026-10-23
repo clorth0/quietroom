@@ -9,6 +9,7 @@ Store (rebaseline / ack / promote-anchor) are applied at the start of a tick.
 """
 
 from __future__ import annotations
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -418,6 +419,7 @@ class MonitorService:
         if self.fleet is not None:
             # Retry the store-and-forward backlog every tick, even when no segment is due.
             self.fleet.flush()
+            self._report_fleet_parked()
         try:
             self.process_controls(now)
         except Exception as e:  # store trouble must not stop monitoring
@@ -621,6 +623,35 @@ class MonitorService:
                     }
                 )
 
+    def _report_fleet_parked(self) -> None:
+        """Surface fleet uploads the outbox set aside (overflow, stale, poison).
+
+        Local sink only: the fleet link is the thing in trouble, and pushing a
+        notice about it into the same queue would feed the bound it hit.
+        """
+        assert self.fleet is not None
+        pending_report = getattr(self.fleet, "last_parked", None)
+        if not pending_report:
+            return
+        parked = list(pending_report)
+        pending_report.clear()  # report each set-aside row once
+        self.sink(
+            {
+                "type": "fleet_parked",
+                "node_id": self.config.node_id,
+                "timestamp": self.clock(),
+                "parked": parked,
+                "hint": "inspect: quietroom-node --outbox list --channel fleet --parked; "
+                "retry: quietroom-node --outbox requeue --channel fleet --id N",
+            }
+        )
+        print(
+            f"quietroom-node: WARNING: fleet outbox set aside {len(parked)} upload(s): "
+            f"{parked[-1]['reason']}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     def _fleet_health(self) -> dict:
         from quietroom.fleet import CERT_EXPIRY_WARNING_PREFIXES, cert_expiry_warning
 
@@ -639,6 +670,8 @@ class MonitorService:
         return {
             "fleet_auth": getattr(self.fleet, "auth_mode", None),
             "fleet_pending": self.fleet.pending(),
+            "fleet_outbox": status() if (status := getattr(self.fleet, "outbox_status", None))
+            else {"pending": self.fleet.pending()},
             "fleet_warnings": warnings,
             "fleet_cert": cert,
         }

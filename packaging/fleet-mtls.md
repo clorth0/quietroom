@@ -181,4 +181,4 @@ not before 2027-04-01.** Until then:
 
 - No CRL/OCSP. Revocation is the deny list above plus short-lived certificates.
 - `quietroom-central` serves through Werkzeug's threaded server, because that is where the verified peer certificate is available. It is fine for a small fleet. Use L4 passthrough (above) if it must sit behind a proxy.
-- A revoked node keeps retrying: its fleet outbox (`<store>.fleet-outbox`) has no dead letter, so its data piles up locally until the node is decommissioned.
+- A revoked node keeps retrying, one attempt per tick. Its fleet outbox (`<store>.fleet-outbox`) is bounded (`[fleet] outbox_max_rows`, `outbox_max_age_s`; see packaging/hardening.md), so its data no longer piles up without limit, but the oldest data is parked and eventually dropped until the node is decommissioned or re-issued a certificate.

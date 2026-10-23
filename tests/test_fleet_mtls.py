@@ -458,21 +458,23 @@ def test_node_once_reports_to_central_over_mtls(pki, capsys):
 
 
 def test_new_payloads_never_overtake_the_backlog(tmp_path):
+    # Events, not heartbeats: queued heartbeats coalesce to the newest by design
+    # (tests/test_fleet_outbox_bounds.py); events must all arrive, in order.
     seen: list[bytes] = []
     up = {"ok": False}
 
     def sender(url, body, headers):
         if not up["ok"]:
             raise OSError("down")
-        seen.append(json.loads(body)["n"])
+        seen.append(json.loads(body)["events"][0]["n"])
 
     cl = FleetClient("https://c.test", sender=sender, outbox_path=tmp_path / "o.db")
-    assert cl.send_heartbeat({"n": 1}) is False
+    assert cl.send_events("n1", [{"n": 1}]) is False
     up["ok"] = True
-    assert cl.send_heartbeat({"n": 2}) is False  # queued behind the backlog, no extra attempt
+    assert cl.send_events("n1", [{"n": 2}]) is False  # queued behind the backlog, no extra attempt
     assert seen == [] and cl.pending() == 2
     assert cl.flush() == 2 and seen == [1, 2] and cl.pending() == 0
-    assert cl.send_heartbeat({"n": 3}) is True and seen == [1, 2, 3]
+    assert cl.send_events("n1", [{"n": 3}]) is True and seen == [1, 2, 3]
 
 
 def test_flush_stops_at_the_first_failure_to_keep_order(tmp_path):
@@ -483,8 +485,8 @@ def test_flush_stops_at_the_first_failure_to_keep_order(tmp_path):
         raise OSError("down")
 
     cl = FleetClient("https://c.test", sender=down, outbox_path=tmp_path / "o.db")
-    cl._enqueue("/api/v1/heartbeat", b'{"n":1}')
-    cl._enqueue("/api/v1/heartbeat", b'{"n":2}')
+    cl._enqueue("/api/v1/events", b'{"n":1}')
+    cl._enqueue("/api/v1/events", b'{"n":2}')
     assert cl.flush() == 0 and len(calls) == 1 and cl.pending() == 2
 
 

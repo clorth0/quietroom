@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from quietroom.checks import Report, present
-from quietroom.config import NodeConfig
+from quietroom.config import NodeConfig, config_warnings
+from quietroom.fleet import LEGACY_TOKEN_REMOVAL
 
 SMTP_PASSWORD_ENV = "QUIETROOM_SMTP_PASSWORD"
 WEBHOOK_SECRET_ENV = "QUIETROOM_WEBHOOK_SECRET"
@@ -45,7 +46,7 @@ def check_node_config(cfg: NodeConfig, env: Mapping[str, str]) -> dict[str, Any]
         ):
             r.warnings.append(
                 "fleet auth is the legacy shared bearer token (deprecated): any holder can "
-                "impersonate any node; migrate to per-node mTLS"
+                f"impersonate any node; migrate to per-node mTLS ({LEGACY_TOKEN_REMOVAL})"
             )
     elif fc is not None:
         if present(env, CENTRAL_TOKEN_ENV):
@@ -54,7 +55,10 @@ def check_node_config(cfg: NodeConfig, env: Mapping[str, str]) -> dict[str, Any]
                 "remove it from the node's environment"
             )
         _check_mtls(cfg, r)
-    return r.as_dict()
+    # Valid but probably unintended settings (plain-http webhook, poll_s too slow).
+    r.warnings += config_warnings(cfg)
+    # The config loaded, so it passed schema validation (see cli._report_invalid_config).
+    return {**r.as_dict(), "config_errors": []}
 
 
 def _readable(path: str) -> bool:
