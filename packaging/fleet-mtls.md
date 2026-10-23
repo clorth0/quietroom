@@ -116,9 +116,9 @@ node UUID per line, and `#` starts a comment:
   `client certificate expires in N days (...)`. The node re-evaluates this on every
   health call, so a long-running daemon starts warning without a restart. It also
   prints the warning to stderr at startup.
-- **Central.** `--cert-warn-days` (default 30; a whole number of days from 1 to 365,
-  checked by `--check-config` and at startup, where a bad value exits 2. Unlike
-  the node setting, 0 is not accepted). Central records `notAfter` from the
+- **Central.** `--cert-warn-days` (default 30; whole days from 0 to 365, 0 disables the
+  warning as on the node; checked by `--check-config` and at startup, where a bad
+  value exits 2). Central records `notAfter` from the
   **verified TLS client certificate** on each heartbeat, never from the body.
   `GET /api/v1/nodes` gives each node
   `cert: {not_after, expires_in_s, expiring, expired}`, which is `null` for

@@ -71,8 +71,12 @@ CERT_WARN_DAYS_MAX = 365
 
 
 def parse_cert_warn_days(value: object) -> int:
-    """``--cert-warn-days``: a whole number of days from 1 to CERT_WARN_DAYS_MAX."""
-    allowed = f"an integer from 1 to {CERT_WARN_DAYS_MAX} (days)"
+    """``--cert-warn-days``: whole days from 0 to CERT_WARN_DAYS_MAX; 0 = never warn.
+
+    Same meaning as the node's ``[fleet] cert_warn_days = 0``: an expired
+    certificate is still reported as expired, a valid one is never "expiring".
+    """
+    allowed = f"an integer from 0 to {CERT_WARN_DAYS_MAX} (days; 0 = never warn)"
     if isinstance(value, bool):
         raise ValueError(f"--cert-warn-days must be {allowed}, got {value!r}")
     if isinstance(value, int):
@@ -81,7 +85,7 @@ def parse_cert_warn_days(value: object) -> int:
         n = int(value.strip())
     else:
         raise ValueError(f"--cert-warn-days must be {allowed}, got {value!r}")
-    if not 1 <= n <= CERT_WARN_DAYS_MAX:
+    if not 0 <= n <= CERT_WARN_DAYS_MAX:
         raise ValueError(f"--cert-warn-days must be {allowed}, got {n}")
     return n
 
@@ -527,7 +531,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         "--cert-warn-days",
         default=str(int(DEFAULT_CERT_WARN_DAYS)),
         help="flag node client certificates expiring within this many days "
-        f"(an integer, 1-{CERT_WARN_DAYS_MAX}; default %(default)s)",
+        f"(an integer, 0-{CERT_WARN_DAYS_MAX}; 0 = never warn; default %(default)s)",
     )
     a = p.parse_args(argv)
     if a.check_config:

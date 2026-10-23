@@ -66,7 +66,7 @@ On central, `quietroom-central --cert ... --key ... --client-ca ...
 [--allow-legacy-token] [--deny-list FILE] [--cert-warn-days N] --check-config`
 does the same for `QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN`, the
 TLS files, the deny list (exists, is UTF-8, every line a UUID; reports the count)
-and `--cert-warn-days` (an integer from 1 to 365).
+and `--cert-warn-days` (an integer from 0 to 365; 0 = never warn).
 
 ## Undeliverable alerts (dead letters)
 

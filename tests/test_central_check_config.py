@@ -83,18 +83,20 @@ def test_a_deny_list_that_is_not_text_is_an_error(tls, tmp_path):
     assert any("--deny-list" in e for e in r["errors"]), r["errors"]
 
 
-@pytest.mark.parametrize("value", ["1", "30", "365", 30])
+@pytest.mark.parametrize("value", ["0", 0, "1", "30", "365", 30])
 def test_cert_warn_days_in_range_passes(tls, value):
     assert _check(tls, cert_warn_days=value)["ok"]
     assert parse_cert_warn_days(value) == int(value)
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "366", "1.5", "abc", "", "1e3", True, 0, 400])
+@pytest.mark.parametrize(
+    "value", ["-1", "-0", -5, "366", "1.5", "abc", "", "1e3", True, False, 400, 1.0]
+)
 def test_cert_warn_days_out_of_range_or_not_an_int_is_an_error(tls, value):
     r = _check(tls, cert_warn_days=value)
     assert not r["ok"]
     [e] = [e for e in r["errors"] if "--cert-warn-days" in e]
-    assert f"1 to {CERT_WARN_DAYS_MAX}" in e and "integer" in e
+    assert f"0 to {CERT_WARN_DAYS_MAX}" in e and "integer" in e and "0 = never" in e
     with pytest.raises(ValueError):
         parse_cert_warn_days(value)
 
@@ -104,7 +106,7 @@ def test_check_config_cli_reports_both_and_exits_1(tls, tmp_path, capsys):
     p = tmp_path / "deny.txt"
     p.write_text("bogus\n")
     rc = main(["--cert", cert, "--key", key, "--client-ca", ca, "--check-config",
-               "--deny-list", str(p), "--cert-warn-days", "0"], env={})
+               "--deny-list", str(p), "--cert-warn-days", "-1"], env={})
     out, err = capsys.readouterr()
     assert rc == 1
     report = json.loads(out)
@@ -123,7 +125,7 @@ def test_check_config_cli_passes_with_valid_options(tls, tmp_path, capsys):
     assert rc == 0, capsys.readouterr()
 
 
-@pytest.mark.parametrize("value", ["0", "1000", "x"])
+@pytest.mark.parametrize("value", ["-1", "1000", "x"])
 def test_serving_refuses_a_bad_cert_warn_days(tls, value, capsys):
     cert, key, ca = tls
     with pytest.raises(SystemExit) as exc:
@@ -131,3 +133,35 @@ def test_serving_refuses_a_bad_cert_warn_days(tls, value, capsys):
              env={})
     assert exc.value.code == 2
     assert "--cert-warn-days" in capsys.readouterr().err
+
+
+def test_serving_with_zero_means_never_warn(tls, monkeypatch):
+    """0 disables the expiry warning, like the node's ``[fleet] cert_warn_days = 0``."""
+    import quietroom.central as central
+
+    seen = {}
+
+    def fake_build(*a, **kw):
+        seen.update(kw)
+        raise SystemExit(0)  # stop before binding a port
+
+    monkeypatch.setattr(central, "build_central", fake_build)
+    cert, key, ca = tls
+    with pytest.raises(SystemExit) as exc:
+        main(["--cert", cert, "--key", key, "--client-ca", ca, "--cert-warn-days", "0"], env={})
+    assert exc.value.code == 0
+    assert seen["cert_warn_days"] == 0
+
+
+def test_zero_warn_days_never_flags_a_valid_cert_but_still_flags_an_expired_one():
+    from quietroom.fleet import DAY_S, cert_expiry
+
+    assert cert_expiry(1000 + DAY_S, now=1000, warn_s=0 * DAY_S)["expiring"] is False
+    assert cert_expiry(1000 - 1, now=1000, warn_s=0 * DAY_S)["expired"] is True
+
+
+def test_the_help_says_zero_means_never(capsys):
+    with pytest.raises(SystemExit):
+        main(["--help"], env={})
+    out = " ".join(capsys.readouterr().out.split())
+    assert "0 = never" in out and f"0-{CERT_WARN_DAYS_MAX}" in out
