@@ -40,6 +40,9 @@ class RtlSdrDevice(Device):
         self.gain = gain
         self._runner = runner
 
+    def frontend_settings(self):
+        return {"gain": self.gain}
+
     def capabilities(self):
         return RadioCapabilities(
             "RTL-SDR",

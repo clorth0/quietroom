@@ -45,5 +45,15 @@ python_version = "3.11"
 ignore_missing_imports = true
 files = ["quietroom"]
 
+# Re-baseline policy: the incident-freeze invariant lives here, so these
+# modules are fully checked (bodies included), not just their signatures.
+[[tool.mypy.overrides]]
+module = ["quietroom.node.rebaseline", "quietroom.node.service", "quietroom.store"]
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["quietroom.node.rebaseline"]
+disallow_untyped_defs = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

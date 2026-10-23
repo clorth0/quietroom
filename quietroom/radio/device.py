@@ -35,6 +35,14 @@ class Device(ABC):
         from quietroom.radio.limits import MAX_HZ, MIN_HZ
         return RadioCapabilities(type(self).__name__, MIN_HZ, MAX_HZ)
 
+    def frontend_settings(self) -> dict[str, object]:
+        """RF front-end settings that change measured power (gains, amp).
+
+        Part of the baseline fingerprint: a baseline learned at one gain is
+        not comparable with sweeps taken at another.
+        """
+        return {}
+
     @abstractmethod
     def sweep(
         self, plan: SweepPlan, cycles: int = 1

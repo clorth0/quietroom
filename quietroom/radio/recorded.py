@@ -116,7 +116,10 @@ class DemoDevice(Device):
 
 
 class StreamingDemoDevice(Device):
-    """Serves `n_clean` clean sweeps, then planted-bug sweeps, on the requested grid."""
+    """Serves `n_clean` clean sweeps, then planted-bug sweeps, on the requested grid.
+
+    The bug only appears in plans whose span contains it; other spans stay clean.
+    """
 
     def __init__(self, n_clean: int = 3) -> None:
         self._n_clean = n_clean
@@ -129,7 +132,8 @@ class StreamingDemoDevice(Device):
         for _ in range(cycles):
             clean = self._served < self._n_clean
             self._served += 1
-            bug = None if clean else DEMO_BUG_HZ
+            in_span = plan.start_hz <= DEMO_BUG_HZ < plan.stop_hz
+            bug = None if clean or not in_span else DEMO_BUG_HZ
             yield spectrum_grid(
                 plan.start_hz, plan.stop_hz, plan.bin_hz, DEMO_FLOOR_DBM,
                 float(self._served), bug_hz=bug,
