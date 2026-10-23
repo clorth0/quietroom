@@ -64,7 +64,121 @@ migrate without downtime:
    without `--allow-legacy-token` (client certificates then become mandatory
    at the TLS layer) and destroy the shared token.
 
+## Revoking a node (deny list)
+
+Start central with `--deny-list /etc/quietroom/central/deny.txt`. The file holds one
+node UUID per line, and `#` starts a comment:
+
+```text
+# 2026-10-22 floor3-east: chassis stolen, key presumed compromised
+6f1c2a52-6a0e-4c35-9a53-0b8a3a6f5e01
+```
+
+- **No restart needed.** Central `stat`s the file on every write and re-reads it
+  when inode, size, mtime or ctime change. The next request from a listed UUID gets
+  `403 node certificate revoked`, and its heartbeats and events are not stored.
+  Central logs the first refusal for each UUID to stderr.
+- **Edit atomically.** Write a temporary file in the same directory, then rename it
+  over the list, so central never reads a half-written file:
+  `cp deny.txt deny.txt.new && echo "$UUID" >> deny.txt.new && mv deny.txt.new deny.txt`.
+- **It fails closed.** A missing or malformed file stops central at startup. If the
+  file later disappears or stops parsing, central answers **all** writes with 503.
+  This includes legacy-token writes. `/healthz` reports `"ok": false` and the error
+  until the file is fixed. Nodes keep their data in their outboxes meanwhile, and
+  operator reads keep working. Central doesn't fall back to the previous list,
+  because then a revocation that was being added could silently fail to apply. An
+  empty file means "nobody is revoked".
+- `GET /api/v1/nodes` marks each node `"revoked": true|false`, and
+  `/healthz.deny_list` shows `{path, entries, error}`.
+- **The TLS handshake still succeeds.** A revoked node's certificate still chains
+  to `--client-ca`. Refusal happens per request in the app, so a revoked node can
+  still open connections. Its writes are refused, and it can never read the fleet:
+  node certificates never could.
+- **The deny list can't revoke the legacy shared token.** That token carries no
+  node identity, so the only way to revoke it is to rotate it, which affects every
+  legacy node.
+- **After a key compromise,** don't just re-issue a certificate for the same UUID:
+  the denied UUID stays denied. Give the replacement node a new identity (delete
+  `identity.json`, run `--print-identity`), issue a certificate for the new UUID,
+  and leave the old UUID on the list. Short certificate lifetimes (e.g. 90 days)
+  remain the backstop.
+
+## Certificate expiry
+
+- **Node.** `[fleet] cert_warn_days` (default 30; 0 disables the warning).
+  `quietroom-node` reads its certificate's `notAfter` at startup and reports
+  `health.fleet_cert = {not_after, expires_in_s, expiring, expired}`. The heartbeat
+  carries the same object. Inside the window, `health.fleet_warnings` gains
+  `client certificate expires in N days (...)`. The node re-evaluates this on every
+  health call, so a long-running daemon starts warning without a restart. It also
+  prints the warning to stderr at startup.
+- **Central.** `--cert-warn-days` (default 30). Central records `notAfter` from the
+  **verified TLS client certificate** on each heartbeat, never from the body.
+  `GET /api/v1/nodes` gives each node
+  `cert: {not_after, expires_in_s, expiring, expired}`, which is `null` for
+  legacy-token nodes. `/healthz.certs_expiring` counts nodes inside the window.
+  Central logs one stderr warning per node.
+- **Renewal.** Issue a new certificate for the **same** UUID with the CSR steps
+  above, install it, and restart `quietroom-node`.
+
+## Reverse proxies
+
+**Supported: TCP (L4) passthrough.** The proxy forwards the raw TLS stream and
+central still terminates TLS and verifies the client certificate itself. Nothing
+about identity changes. HAProxy:
+
+```haproxy
+frontend quietroom_fleet
+    mode tcp
+    bind :8443
+    default_backend quietroom_central
+backend quietroom_central
+    mode tcp
+    server central 127.0.0.1:9443
+```
+
+The nginx equivalent is a `stream { server { listen 8443; proxy_pass 127.0.0.1:9443; } }`
+block. To share port 443 with other sites, route by SNI with `ssl_preread on`. Central's
+server certificate must name the hostname nodes connect to. Central sees the
+proxy's address as the client IP, which doesn't matter for identity: identity is
+never derived from the IP.
+
+**Declined: TLS-terminating proxies that pass the client certificate in a header**
+(e.g. nginx `$ssl_client_escaped_cert`, or `X-SSL-Client-Cert` / `X-Forwarded-Client-Cert`).
+Central takes identity only from the TLS socket. `PEER_CERT_ENVIRON` can't be set from
+HTTP, and `test_http_header_cannot_inject_a_peer_cert` checks that. Honouring a
+forwarded-certificate header would make node identity depend on two things:
+
+- every request reaching central through a proxy that strips and replaces the header;
+- nothing else being able to reach central's port.
+
+If either assumption fails (a second listener, a direct port, a proxy route that
+forgets to clear the header), anyone could claim any node UUID. Doing it safely needs
+a second authenticated hop, i.e. proxy-to-central mTLS plus an allow-list of proxy
+identities. That is more trust surface than the feature is worth for a small fleet,
+so it isn't implemented.
+
+## Legacy token: deprecation and removal plan
+
+The shared `QUIETROOM_CENTRAL_TOKEN` (`[fleet] auth = "legacy-token"` on nodes,
+`--allow-legacy-token` on central) has been deprecated since #52, 2026-10-22. It
+still works, unchanged, for migration. **Removal is planned for quietroom 0.5.0,
+not before 2027-04-01.** Until then:
+
+- central prints a DEPRECATED warning with this plan at startup when
+  `--allow-legacy-token` is set;
+- legacy-token responses carry `X-Quietroom-Auth: legacy-token` and
+  `Deprecation: @1792627200` (RFC 9745). They also carry
+  `Sunset: Thu, 01 Apr 2027 00:00:00 GMT` (RFC 8594) and a `Link` to this section
+  with `rel="deprecation"`;
+- `/healthz.legacy_token_writes` counts accepted legacy writes since start. When it
+  stays at 0 and `GET /api/v1/nodes` shows no `auth: "legacy-token"` nodes, follow
+  step 4 of the migration;
+- legacy-mode nodes print the warning with the plan to stderr at startup, and keep
+  it in `health.fleet_warnings`.
+
 ## Not covered yet
 
-- No CRL/OCSP. Revoke by issuing short-lived certificates and rotating the node CA. A deny-list of UUIDs at central is a small follow-up.
-- `quietroom-central` serves through Werkzeug's threaded server, because that is where the verified peer certificate is available. It is fine for a small fleet. A terminating reverse proxy would need a trusted identity-header design, which is not implemented on purpose.
+- No CRL/OCSP. Revocation is the deny list above plus short-lived certificates.
+- `quietroom-central` serves through Werkzeug's threaded server, because that is where the verified peer certificate is available. It is fine for a small fleet. Use L4 passthrough (above) if it must sit behind a proxy.
+- A revoked node keeps retrying: its fleet outbox (`<store>.fleet-outbox`) has no dead letter, so its data piles up locally until the node is decommissioned.

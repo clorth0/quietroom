@@ -152,7 +152,16 @@ class EmailConfig:
 
 FleetAuth = Literal["mtls", "legacy-token"]
 _FLEET_KEYS = frozenset(
-    {"base_url", "heartbeat_s", "auth", "cert_file", "key_file", "ca_file", "identity_path"}
+    {
+        "base_url",
+        "heartbeat_s",
+        "auth",
+        "cert_file",
+        "key_file",
+        "ca_file",
+        "identity_path",
+        "cert_warn_days",
+    }
 )
 
 
@@ -165,6 +174,8 @@ class FleetConfig:
     ``ca_file`` pins the CA that issued central's server certificate.
     ``auth = "legacy-token"``: DEPRECATED shared bearer from the
     ``QUIETROOM_CENTRAL_TOKEN`` env var; ``ca_file`` optionally pins central.
+    ``cert_warn_days``: warn (health, heartbeat) this long before the client
+    certificate expires; 0 disables the warning.
     """
 
     base_url: str
@@ -174,6 +185,7 @@ class FleetConfig:
     key_file: str = ""
     ca_file: str = ""
     identity_path: str = ""
+    cert_warn_days: float = 30.0
 
     @classmethod
     def from_dict(cls, d, store_path: str = "") -> FleetConfig | None:
@@ -194,6 +206,9 @@ class FleetConfig:
         heartbeat = float(d.get("heartbeat_s", 60.0))
         if heartbeat <= 0:
             raise ValueError("[fleet] heartbeat_s must be > 0")
+        warn = d.get("cert_warn_days", 30.0)
+        if isinstance(warn, bool) or not isinstance(warn, (int, float)) or warn < 0:
+            raise ValueError(f"[fleet] cert_warn_days must be a number >= 0, got {warn!r}")
         files = {k: str(d.get(k, "")) for k in ("cert_file", "key_file", "ca_file")}
         identity = str(d.get("identity_path", ""))
         if not identity and store_path:
@@ -213,7 +228,7 @@ class FleetConfig:
                 raise ValueError("[fleet] mTLS needs identity_path (or a [store] path)")
         return cls(
             base, heartbeat, "mtls" if auth == "mtls" else "legacy-token", identity_path=identity,
-            **files,
+            cert_warn_days=float(warn), **files,
         )
 
 

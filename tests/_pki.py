@@ -36,7 +36,7 @@ def make_ca(tmp: Path, cn: str) -> CA:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(_now() - datetime.timedelta(minutes=5))
-        .not_valid_after(_now() + datetime.timedelta(days=1))
+        .not_valid_after(_now() + datetime.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .add_extension(
@@ -70,6 +70,7 @@ def issue(
     dns: tuple[str, ...] = (),
     ips: tuple[str, ...] = (),
     server: bool = False,
+    days: float = 365,
 ) -> tuple[Path, Path]:
     """Issue a leaf cert; returns (cert_path, key_path) with the key at mode 0600."""
     key = ec.generate_private_key(ec.SECP256R1())
@@ -83,7 +84,7 @@ def issue(
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(_now() - datetime.timedelta(minutes=5))
-        .not_valid_after(_now() + datetime.timedelta(days=1))
+        .not_valid_after(_now() + datetime.timedelta(days=days))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         # Python 3.13+ sets VERIFY_X509_STRICT, which requires SKI/AKI.
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
@@ -119,5 +120,7 @@ def server_cert(ca: CA, tmp: Path, stem: str = "central") -> tuple[Path, Path]:
     return issue(ca, tmp, stem, cn="localhost", dns=("localhost",), ips=("127.0.0.1",), server=True)
 
 
-def node_cert(ca: CA, tmp: Path, node_uuid: str, stem: str = "node") -> tuple[Path, Path]:
-    return issue(ca, tmp, stem, cn=node_uuid, uris=(f"urn:uuid:{node_uuid}",))
+def node_cert(
+    ca: CA, tmp: Path, node_uuid: str, stem: str = "node", days: float = 365
+) -> tuple[Path, Path]:
+    return issue(ca, tmp, stem, cn=node_uuid, uris=(f"urn:uuid:{node_uuid}",), days=days)

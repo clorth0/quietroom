@@ -621,6 +621,28 @@ class MonitorService:
                     }
                 )
 
+    def _fleet_health(self) -> dict:
+        from quietroom.fleet import CERT_EXPIRY_WARNING_PREFIXES, cert_expiry_warning
+
+        assert self.fleet is not None
+
+        cert_status = getattr(self.fleet, "cert_status", None)
+        cert = cert_status() if cert_status is not None else None
+        warnings = [
+            w for w in self.fleet_warnings if not w.startswith(CERT_EXPIRY_WARNING_PREFIXES)
+        ]
+        # Expiry is re-evaluated on every call: a long-running daemon must start
+        # warning as the deadline approaches, not only if it was close at startup.
+        expiry = cert_expiry_warning(cert) if cert else None
+        if expiry:
+            warnings.append(expiry)
+        return {
+            "fleet_auth": getattr(self.fleet, "auth_mode", None),
+            "fleet_pending": self.fleet.pending(),
+            "fleet_warnings": warnings,
+            "fleet_cert": cert,
+        }
+
     def health(self):
         return {
             "node_id": self.config.node_id,
@@ -653,15 +675,7 @@ class MonitorService:
                 ch.name: ch.parked() for ch in self.notifiers if hasattr(ch, "parked")
             },
             "alert_delivery_errors": dict(self.delivery_errors),
-            **(
-                {
-                    "fleet_auth": getattr(self.fleet, "auth_mode", None),
-                    "fleet_pending": self.fleet.pending(),
-                    "fleet_warnings": list(self.fleet_warnings),
-                }
-                if self.fleet is not None
-                else {}
-            ),
+            **(self._fleet_health() if self.fleet is not None else {}),
             "device": getattr(self, "device_info", None).__dict__
             if getattr(self, "device_info", None)
             else None,
@@ -681,7 +695,9 @@ class MonitorService:
                 self.notifier.watchdog()
             if stop_event is not None:
                 stop_event.wait(self.config.poll_s)
-            elif max_ticks is not None and ticks < max_ticks:
+            elif max_ticks is None:
+                time.sleep(self.config.poll_s)  # the daemon: never spin between ticks
+            elif ticks < max_ticks:
                 time.sleep(min(self.config.poll_s, 0.05))
         return ticks
 

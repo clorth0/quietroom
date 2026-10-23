@@ -17,6 +17,10 @@ Auth model (``require_client_cert=True``, the deployment mode):
   ``auth: "legacy-token"`` and answered with ``X-Quietroom-Auth: legacy-token``.
 * Reads (``GET /api/v1/*``) are for operators: they need ``read_token``. A node
   certificate or the legacy node token does not grant fleet-wide reads.
+* Revocation: an optional ``DenyList`` file of node UUIDs is checked on every
+  write and re-read when it changes, so revoking a node needs no restart. If
+  the file becomes unreadable or malformed, *all* writes get 503 (fail closed)
+  until it is fixed; nodes keep their data in their outboxes meanwhile.
 
 ``require_client_cert=False`` keeps the pre-mTLS behaviour (one shared token for
 everything, or no auth at all when ``token`` is None) for tests and local use.
@@ -27,22 +31,115 @@ path when central grows up.
 
 from __future__ import annotations
 import argparse
+import email.utils
 import hmac
 import json
 import os
 import ssl
 import sys
+import threading
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, abort, g, request
 from werkzeug.serving import BaseWSGIServer, WSGIRequestHandler, make_server
 
-from quietroom.fleet import identity_from_peer_cert
+from quietroom.fleet import (
+    DAY_S,
+    DEFAULT_CERT_WARN_DAYS,
+    LEGACY_TOKEN_DEPRECATED_AT,
+    LEGACY_TOKEN_DOCS,
+    LEGACY_TOKEN_REMOVAL,
+    LEGACY_TOKEN_SUNSET,
+    cert_expiry,
+    cert_expiry_warning,
+    identity_from_peer_cert,
+)
 
 PEER_CERT_ENVIRON = "quietroom.peer_cert"
 LEGACY_TOKEN_ENV = "QUIETROOM_CENTRAL_TOKEN"
 READ_TOKEN_ENV = "QUIETROOM_CENTRAL_READ_TOKEN"
+
+
+def _warn(msg: str) -> None:
+    print(f"quietroom-central: WARNING: {msg}", file=sys.stderr, flush=True)
+
+
+def parse_deny_list(text: str) -> frozenset[str]:
+    """Node UUIDs, one per line; ``#`` starts a comment. Any other content is an error."""
+    out: set[str] = set()
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            out.add(str(uuid.UUID(line)))
+        except ValueError:
+            raise ValueError(f"line {n}: not a node UUID: {line!r}") from None
+    return frozenset(out)
+
+
+class DenyListUnavailable(Exception):
+    pass
+
+
+class DenyList:
+    """A revocation file re-read whenever it changes (checked by ``stat`` per request).
+
+    Construction is strict (a missing or malformed file raises ValueError) so a
+    typo cannot start central with revocation silently off. After that, a file
+    that disappears or stops parsing makes ``current()`` raise
+    ``DenyListUnavailable`` rather than fall back to an older list: a revocation
+    that was being added must not be silently ignored.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._sig: tuple[int, ...] | None = None
+        self._uuids: frozenset[str] = frozenset()
+        self.error: str | None = None
+        self._refresh()
+        if self.error:
+            raise ValueError(self.error)
+
+    def _read(self) -> frozenset[str]:
+        return parse_deny_list(self.path.read_text(encoding="utf-8"))
+
+    def _refresh(self) -> None:
+        try:
+            st = os.stat(self.path)
+            sig: tuple[int, ...] = (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        except OSError as e:
+            self._sig, self.error = None, f"deny list {self.path} unreadable: {e.strerror}"
+            return
+        if sig == self._sig:
+            return
+        try:
+            uuids = self._read()
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            self._sig, self.error = None, f"deny list {self.path} rejected: {e}"
+            return
+        self._sig, self._uuids, self.error = sig, uuids, None
+
+    def current(self) -> frozenset[str]:
+        with self._lock:
+            self._refresh()
+            if self.error:
+                raise DenyListUnavailable(self.error)
+            return self._uuids
+
+    def last_good(self) -> frozenset[str]:
+        with self._lock:
+            self._refresh()
+            return self._uuids
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            self._refresh()
+            return {"path": str(self.path), "entries": len(self._uuids), "error": self.error}
 
 
 def _bearer_ok(expected: str | None) -> bool:
@@ -58,19 +155,40 @@ def create_central_app(
     *,
     require_client_cert: bool = False,
     read_token: str | None = None,
+    deny_list: DenyList | None = None,
+    cert_warn_days: float = DEFAULT_CERT_WARN_DAYS,
 ) -> Flask:
+    if deny_list is not None and not require_client_cert:
+        raise ValueError("a deny list identifies nodes by client certificate UUID; it needs "
+                         "require_client_cert=True")
     app = Flask(__name__)
     nodes: dict[str, dict[str, Any]] = {}  # node_uuid (mTLS) or node_id (legacy) -> heartbeat
     events: list[dict[str, Any]] = []
+    cert_not_after: dict[str, float] = {}  # node key -> notAfter of the verified TLS cert
+    warned_expiry: set[str] = set()
+    warned_revoked: set[str] = set()
+    counters = {"legacy_token_writes": 0}
+    warn_s = cert_warn_days * DAY_S
     app.central_nodes = nodes  # type: ignore[attr-defined]
     app.central_events = events  # type: ignore[attr-defined]
+
+    def _cert(key: str, now: float) -> dict[str, Any] | None:
+        na = cert_not_after.get(key)
+        return None if na is None else cert_expiry(na, now, warn_s)
 
     @app.before_request
     def _auth():
         g.node_uuid = None
         g.auth = None
+        g.not_after = None
         if request.path == "/healthz":
             return None
+        denied: frozenset[str] = frozenset()
+        if deny_list is not None and request.method != "GET":
+            try:
+                denied = deny_list.current()
+            except DenyListUnavailable as e:
+                abort(503, f"{e}; writes are paused until the deny list is fixed")
         if not require_client_cert:
             if token is not None and not _bearer_ok(token):
                 abort(403)
@@ -89,7 +207,14 @@ def create_central_app(
             body = request.get_json(force=True, silent=True) or {}
             if body.get("node_uuid") != ident:
                 abort(403, "payload node_uuid does not match the client certificate")
+            if ident in denied:
+                if ident not in warned_revoked:
+                    warned_revoked.add(ident)
+                    _warn(f"refusing writes from revoked node {ident} (deny list)")
+                abort(403, "node certificate revoked (central deny list)")
             g.node_uuid, g.auth = ident, "mtls"
+            if peer.get("notAfter"):
+                g.not_after = float(ssl.cert_time_to_seconds(peer["notAfter"]))
             return None
         if token is not None and _bearer_ok(token):
             g.auth = "legacy-token"
@@ -100,6 +225,11 @@ def create_central_app(
     def _flag(resp):
         if g.get("auth") == "legacy-token":
             resp.headers["X-Quietroom-Auth"] = "legacy-token"
+            resp.headers["Deprecation"] = f"@{int(LEGACY_TOKEN_DEPRECATED_AT)}"  # RFC 9745
+            resp.headers["Sunset"] = email.utils.formatdate(LEGACY_TOKEN_SUNSET, usegmt=True)
+            resp.headers["Link"] = f'<{LEGACY_TOKEN_DOCS}>; rel="deprecation"'
+            if request.method != "GET" and resp.status_code < 400:
+                counters["legacy_token_writes"] += 1
         return resp
 
     def _bound(d: dict[str, Any]) -> dict[str, Any]:
@@ -114,7 +244,17 @@ def create_central_app(
         rec = {**d, **_bound(d)}
         if g.node_uuid is None:
             rec.pop("node_uuid", None)  # unauthenticated claim; never stored
-        nodes[g.node_uuid or str(d["node_id"])] = rec
+        key = g.node_uuid or str(d["node_id"])
+        nodes[key] = rec
+        if g.not_after is not None:
+            cert_not_after[key] = g.not_after
+            status = cert_expiry(g.not_after, warn_s=warn_s)
+            msg = cert_expiry_warning(status)
+            if msg and key not in warned_expiry:
+                warned_expiry.add(key)
+                _warn(f"node {key} ({rec.get('node_id')}): {msg}")
+        else:
+            cert_not_after.pop(key, None)
         return {"ok": True, "nodes": len(nodes)}
 
     @app.post("/api/v1/events")
@@ -131,7 +271,16 @@ def create_central_app(
     @app.get("/api/v1/nodes")
     def list_nodes():
         now = time.time()
-        out = [{**n, "stale": now - n.get("timestamp", 0) > stale_after_s} for n in nodes.values()]
+        revoked = deny_list.last_good() if deny_list is not None else frozenset()
+        out = [
+            {
+                **n,
+                "stale": now - n.get("timestamp", 0) > stale_after_s,
+                "cert": _cert(key, now),  # from the TLS handshake; never the body's claim
+                "revoked": key in revoked,
+            }
+            for key, n in nodes.items()
+        ]
         return {"nodes": out}
 
     @app.get("/api/v1/events")
@@ -149,7 +298,17 @@ def create_central_app(
 
     @app.get("/healthz")
     def healthz():
-        return {"ok": True, "nodes": len(nodes), "events": len(events)}
+        now = time.time()
+        deny = deny_list.status() if deny_list is not None else None
+        expiring = sum(1 for k in nodes if (_cert(k, now) or {}).get("expiring"))
+        return {
+            "ok": deny is None or deny["error"] is None,
+            "nodes": len(nodes),
+            "events": len(events),
+            "certs_expiring": expiring,
+            "deny_list": deny,
+            "legacy_token_writes": counters["legacy_token_writes"],
+        }
 
     return app
 
@@ -200,6 +359,8 @@ def make_central_server(
 def build_central(
     cert: str, key: str, client_ca: str, *, allow_legacy_token: bool, env: dict[str, str],
     stale_after_s: float = 180,
+    deny_list: str | None = None,
+    cert_warn_days: float = DEFAULT_CERT_WARN_DAYS,
 ) -> tuple[Flask, ssl.SSLContext, str]:
     """App + TLS context for ``quietroom-central``; returns a human-readable mode too.
 
@@ -212,8 +373,25 @@ def build_central(
     if allow_legacy_token and not legacy:
         raise SystemExit(f"--allow-legacy-token needs ${LEGACY_TOKEN_ENV} in the environment")
     read_token = env.get(READ_TOKEN_ENV) or None
+    deny: DenyList | None = None
+    if deny_list:
+        try:
+            deny = DenyList(deny_list)
+        except ValueError as e:
+            raise SystemExit(f"--deny-list: {e}") from e
+    if legacy:
+        _warn(
+            f"--allow-legacy-token is DEPRECATED ({LEGACY_TOKEN_REMOVAL}): any holder of "
+            f"${LEGACY_TOKEN_ENV} can post as any node, and the deny list cannot revoke it. "
+            "Migrate nodes to mTLS: packaging/fleet-mtls.md"
+        )
     app = create_central_app(
-        legacy, stale_after_s, require_client_cert=True, read_token=read_token
+        legacy,
+        stale_after_s,
+        require_client_cert=True,
+        read_token=read_token,
+        deny_list=deny,
+        cert_warn_days=cert_warn_days,
     )
     certless = legacy is not None or read_token is not None
     ctx = server_tls_context(cert, key, client_ca, require_client_cert=not certless)
@@ -221,6 +399,8 @@ def build_central(
     if legacy:
         parts.append("DEPRECATED legacy token")
     parts.append("operator reads: token" if read_token else "operator reads: disabled")
+    if deny is not None:
+        parts.append(f"deny list: {deny.status()['entries']} revoked ({deny.path})")
     parts.append("client cert optional at TLS" if certless else "client cert required at TLS")
     return app, ctx, "; ".join(parts)
 
@@ -283,7 +463,20 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         action="store_true",
         help="check TLS material and env tokens (values never printed); exit 1 on errors",
     )
+    p.add_argument(
+        "--deny-list",
+        metavar="FILE",
+        help="revoked node UUIDs, one per line (# comments); re-read on change, no restart",
+    )
+    p.add_argument(
+        "--cert-warn-days",
+        type=float,
+        default=DEFAULT_CERT_WARN_DAYS,
+        help="flag node client certificates expiring within this many days (0: never)",
+    )
     a = p.parse_args(argv)
+    if a.cert_warn_days < 0:
+        p.error("--cert-warn-days must be >= 0")
     if a.check_config:
         report = check_central_config(
             a.cert, a.key, a.client_ca, allow_legacy_token=a.allow_legacy_token, env=env
@@ -301,6 +494,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         allow_legacy_token=a.allow_legacy_token,
         env=env,
         stale_after_s=a.stale_after_s,
+        deny_list=a.deny_list,
+        cert_warn_days=a.cert_warn_days,
     )
     srv = make_central_server(app, a.host, a.port, ctx)
     print(f"quietroom-central listening on https://{a.host}:{srv.server_port} ({mode})", flush=True)

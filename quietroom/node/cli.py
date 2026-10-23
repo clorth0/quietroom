@@ -30,9 +30,14 @@ def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, l
     certificate, and the legacy token is never sent even if it is in the env.
     """
     from quietroom.fleet import (
+        DAY_S,
+        LEGACY_TOKEN_REMOVAL,
         FleetClient,
         NodeIdentity,
+        cert_expiry,
+        cert_expiry_warning,
         cert_file_identity,
+        cert_file_not_after,
         client_tls_context,
     )
     from quietroom.update import check_secret_file
@@ -49,8 +54,9 @@ def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, l
             fc.base_url, token=token, outbox_path=_fleet_outbox(cfg), ssl_context=pinned
         )
         return client, [
-            "fleet auth is the legacy shared bearer token (deprecated): any holder can "
-            "impersonate any node; migrate to per-node mTLS"
+            "fleet auth is the legacy shared bearer token (deprecated, "
+            f"{LEGACY_TOKEN_REMOVAL}): any holder can impersonate any node; "
+            "migrate to per-node mTLS (packaging/fleet-mtls.md)"
         ]
     node_uuid = NodeIdentity.load_or_create(fc.identity_path).node_id
     try:
@@ -72,9 +78,24 @@ def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, l
                 f"[fleet] client certificate is for node {cert_uuid} but this node is "
                 f"{node_uuid} ({fc.identity_path}); issue a certificate for {node_uuid}"
             )
+    warn_s = fc.cert_warn_days * DAY_S
+    not_after: float | None = None
+    try:
+        not_after = cert_file_not_after(fc.cert_file)
+    except NotImplementedError:
+        warnings.append("cannot read the client certificate expiry on this Python")
+    else:
+        expiry = cert_expiry_warning(cert_expiry(not_after, warn_s=warn_s))
+        if expiry:
+            warnings.append(expiry)
     return (
         FleetClient(
-            fc.base_url, outbox_path=_fleet_outbox(cfg), ssl_context=ctx, node_uuid=node_uuid
+            fc.base_url,
+            outbox_path=_fleet_outbox(cfg),
+            ssl_context=ctx,
+            node_uuid=node_uuid,
+            cert_not_after=not_after,
+            cert_warn_s=warn_s,
         ),
         warnings,
     )
@@ -368,6 +389,8 @@ def main(argv=None):
     fleet_warnings: list[str] = []
     if cfg.fleet is not None:
         fleet, fleet_warnings = build_fleet(cfg, os.environ)
+        for w in fleet_warnings:
+            print(f"quietroom-node: WARNING: {w}", file=sys.stderr, flush=True)
     from quietroom.node.watchdog import SdNotifier
 
     svc = MonitorService(
