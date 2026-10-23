@@ -61,6 +61,9 @@ path = "/var/lib/quietroom/quietroom.db"
 min_score = 80
 cooldown_s = 3600
 webhook_url = ""          # set to enable webhook alerts (secret via QUIETROOM_WEBHOOK_SECRET)
+max_attempts = 5          # after this many failures an alert stops blocking its channel
+max_age_s = 604800        # park alerts undelivered this long (7 days); 0 = never
+# Parked alerts: quietroom-node --outbox list|requeue (packaging/hardening.md)
 
 # Email alerts. Remove/comment this table to disable. The SMTP password comes
 # only from QUIETROOM_SMTP_PASSWORD (e.g. /etc/quietroom/secrets.env); a

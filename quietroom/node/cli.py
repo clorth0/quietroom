@@ -145,9 +145,16 @@ def build_alerting(cfg, env):
         )
     if not sinks:
         return None, []
-    path = (cfg.store_path + ".alerts-outbox") if cfg.store_path else ":memory:"
+    path = _alerts_outbox(cfg) if cfg.store_path else ":memory:"
     channels = [
-        QueuedChannel(name, send, Outbox(path, channel=name, backoff_s=30, max_backoff_s=3600))
+        QueuedChannel(
+            name,
+            send,
+            Outbox(
+                path, channel=name, backoff_s=30, max_backoff_s=3600,
+                max_attempts=cfg.alert_max_attempts, max_age_s=cfg.alert_max_age_s,
+            ),
+        )
         for name, send in sinks
     ]
     rule = AlertRule(min_score=cfg.alert_min_score, cooldown_s=cfg.alert_cooldown_s)
@@ -216,6 +223,39 @@ def queue_control(cfg: NodeConfig, a: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 3
+def _alerts_outbox(cfg: NodeConfig) -> str:
+    return cfg.store_path + ".alerts-outbox"
+
+
+def outbox_command(cfg: NodeConfig, a: argparse.Namespace) -> int:
+    """``--outbox list|requeue``: inspect / requeue the alert outbox file directly.
+
+    Safe while the node runs (SQLite locking); a requeued alert goes out on the
+    node's next tick.
+    """
+    from quietroom.alerts import outbox_rows, requeue_parked
+
+    if not cfg.store_path:
+        raise SystemExit("--outbox needs a [store] path (the outbox lives next to the store)")
+    path = _alerts_outbox(cfg)
+    if a.outbox == "list":
+        if not os.path.exists(path):
+            return 0
+        for r in outbox_rows(path, channel=a.channel, parked=True if a.parked else None):
+            r["state"] = "parked" if r["parked_at"] is not None else "pending"
+            print(json.dumps(r, default=str))
+        return 0
+    if not os.path.exists(path):
+        print("nothing parked: no alert outbox yet", file=sys.stderr)
+        return 1
+    ids = None if a.all else a.ids
+    got = requeue_parked(path, ids=ids, channel=a.channel)
+    print(json.dumps({"requeued": got}))
+    if ids is not None and set(ids) - set(got):
+        missing = sorted(set(ids) - set(got))
+        print(f"not parked (or no such row): {missing}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv=None):
@@ -224,7 +264,12 @@ def main(argv=None):
     )
     p.add_argument("--config", help="TOML node config (see config.example.toml)")
     p.add_argument("--demo", action="store_true", help="run with demo device")
-    p.add_argument("--check-config", action="store_true", help="validate config and exit")
+    p.add_argument(
+        "--check-config",
+        action="store_true",
+        help="validate the config and that every env secret / mTLS file it needs is present "
+        "(values are never printed); exit 1 on errors",
+    )
     p.add_argument(
         "--print-identity",
         action="store_true",
@@ -264,15 +309,44 @@ def main(argv=None):
         "--wait", type=float, default=0.0, metavar="SECONDS",
         help="wait for the node to apply it; exit 0 done, 1 failed, 2 refused, 3 timeout",
     )
+    ob = p.add_argument_group("alert outbox (dead letters)")
+    ob.add_argument(
+        "--outbox", choices=("list", "requeue"),
+        help="list queued/parked alerts as JSON lines, or requeue parked ones",
+    )
+    ob.add_argument("--channel", help="with --outbox: only this channel (email, webhook)")
+    ob.add_argument("--parked", action="store_true", help="with --outbox list: parked only")
+    ob.add_argument(
+        "--id", dest="ids", type=int, action="append",
+        help="with --outbox requeue: row id (repeatable)",
+    )
+    ob.add_argument("--all", action="store_true", help="with --outbox requeue: every parked row")
     a = p.parse_args(argv)
     if a.force and not a.rebaseline:
         p.error("--force only applies to --rebaseline")
     if a.freq is not None and not a.ack:
         p.error("--freq only applies to --ack")
+    if a.outbox != "requeue" and (a.ids or a.all):
+        p.error("--id/--all only apply to --outbox requeue")
+    if a.outbox == "requeue" and bool(a.ids) == bool(a.all):
+        p.error("--outbox requeue needs exactly one of --id N or --all")
+    if a.outbox != "list" and a.parked:
+        p.error("--parked only applies to --outbox list")
+    if a.outbox is None and a.channel:
+        p.error("--channel only applies to --outbox")
     cfg = load_config(a.config) if a.config else default_config()
+    if a.outbox:
+        return outbox_command(cfg, a)
     if a.check_config:
-        print(json.dumps(cfg.to_dict(), indent=2))
-        return 0
+        from quietroom.node.checkconfig import check_node_config
+
+        report = check_node_config(cfg, os.environ)
+        print(json.dumps({"config": cfg.to_dict(), **report}, indent=2))
+        for e in report["errors"]:
+            print(f"ERROR: {e}", file=sys.stderr)
+        for w in report["warnings"]:
+            print(f"WARNING: {w}", file=sys.stderr)
+        return 0 if report["ok"] else 1
     if a.print_identity:
         from quietroom.fleet import NodeIdentity
 

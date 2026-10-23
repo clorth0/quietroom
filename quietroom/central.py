@@ -28,8 +28,10 @@ path when central grows up.
 from __future__ import annotations
 import argparse
 import hmac
+import json
 import os
 import ssl
+import sys
 import time
 from typing import Any
 
@@ -223,6 +225,43 @@ def build_central(
     return app, ctx, "; ".join(parts)
 
 
+def check_central_config(
+    cert: str, key: str, client_ca: str, *, allow_legacy_token: bool, env: dict[str, str]
+) -> dict[str, Any]:
+    """Side-effect-free audit for ``quietroom-central --check-config``."""
+    from quietroom.checks import Report, present
+    from quietroom.update import check_secret_file
+
+    r = Report()
+    if allow_legacy_token:
+        r.secret(
+            env, LEGACY_TOKEN_ENV, "legacy shared bearer token (certificate-less nodes)",
+            required=True, missing=f"--allow-legacy-token needs ${LEGACY_TOKEN_ENV}",
+        )
+    elif present(env, LEGACY_TOKEN_ENV):
+        r.warnings.append(
+            f"${LEGACY_TOKEN_ENV} is set but ignored without --allow-legacy-token; "
+            "remove it from central's environment"
+        )
+    r.secret(
+        env, READ_TOKEN_ENV, "operator reads (GET /api/v1/...)", required=False,
+        missing=f"${READ_TOKEN_ENV} is not set: operator reads are disabled "
+        "(every GET is refused)",
+    )
+    missing = [p for p in (cert, key, client_ca) if not os.access(p, os.R_OK)]
+    if missing:
+        r.check("TLS material loads", False, f"missing or unreadable: {', '.join(missing)}")
+    else:
+        try:
+            server_tls_context(cert, key, client_ca)
+        except (OSError, ValueError) as e:
+            r.check("TLS material loads", False, f"cannot load TLS material: {e}")
+        else:
+            r.check("TLS material loads", True)
+            r.warnings += check_secret_file(key)
+    return r.as_dict()
+
+
 def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> int:
     env = dict(os.environ) if env is None else env
     p = argparse.ArgumentParser(
@@ -239,7 +278,22 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         help=f"DEPRECATED: also accept certificate-less nodes bearing ${LEGACY_TOKEN_ENV}",
     )
     p.add_argument("--stale-after-s", type=float, default=180)
+    p.add_argument(
+        "--check-config",
+        action="store_true",
+        help="check TLS material and env tokens (values never printed); exit 1 on errors",
+    )
     a = p.parse_args(argv)
+    if a.check_config:
+        report = check_central_config(
+            a.cert, a.key, a.client_ca, allow_legacy_token=a.allow_legacy_token, env=env
+        )
+        print(json.dumps(report, indent=2))
+        for e in report["errors"]:
+            print(f"ERROR: {e}", file=sys.stderr)
+        for w in report["warnings"]:
+            print(f"WARNING: {w}", file=sys.stderr)
+        return 0 if report["ok"] else 1
     app, ctx, mode = build_central(
         a.cert,
         a.key,

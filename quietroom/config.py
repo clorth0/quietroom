@@ -238,6 +238,11 @@ class NodeConfig:
     antenna: str = ""
     rebaseline: RebaselinePolicy = field(default_factory=RebaselinePolicy)
     email: EmailConfig | None = None
+    # Dead letters: an alert failing this many times stops holding its channel
+    # (and is parked once the channel delivers others); 0 = never.
+    alert_max_attempts: int = 5
+    # Park any alert undelivered for this long; 0 = never.
+    alert_max_age_s: float = 7 * 86400.0
 
     @property
     def fleet_base_url(self) -> str:
@@ -288,6 +293,8 @@ class NodeConfig:
             antenna=str(n.get("antenna", "")),
             rebaseline=rebaseline,
             email=EmailConfig.from_dict(alerts["email"]) if "email" in alerts else None,
+            alert_max_attempts=_alert_max_attempts(alerts),
+            alert_max_age_s=_alert_max_age(alerts),
         )
 
     def to_dict(self):
@@ -299,6 +306,20 @@ class NodeConfig:
             "region": self.region,
             "segments": [s.name for s in self.segments],
         }
+
+
+def _alert_max_attempts(alerts):
+    v = alerts.get("max_attempts", 5)
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise ValueError(f"[alerts] max_attempts must be an integer >= 0 (0 = never), got {v!r}")
+    return v
+
+
+def _alert_max_age(alerts):
+    v = alerts.get("max_age_s", 7 * 86400.0)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        raise ValueError(f"[alerts] max_age_s must be a number >= 0 (0 = never), got {v!r}")
+    return float(v)
 
 
 def load_config(path):

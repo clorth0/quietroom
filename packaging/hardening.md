@@ -29,3 +29,43 @@ rejects a `password` key in `[alerts.email]`. Under systemd put them in
 unit loads via `EnvironmentFile=`. SMTP AUTH is refused without STARTTLS or
 implicit TLS, STARTTLS is mandatory (not opportunistic) when enabled, and the
 server certificate is verified (system trust, or `ca_file` for a private relay).
+
+Check that the service's environment really carries what the config needs,
+before an alert depends on it. `--check-config` lists every env secret as
+required/recommended and present/missing (never the value), checks the fleet
+mTLS files and certificate UUID without creating anything, and exits 1 on an
+error. Load the env file in a shell rather than on the command line so the
+values never appear in `ps`:
+
+```sh
+sudo -u quietroom sh -c 'set -a; . /etc/quietroom/secrets.env; exec \
+  quietroom-node --config /etc/quietroom/config.toml --check-config'
+```
+
+On central, `quietroom-central --cert ... --key ... --client-ca ...
+[--allow-legacy-token] --check-config` does the same for
+`QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN` and the TLS files.
+
+## Undeliverable alerts (dead letters)
+
+Alerts queue per channel in `<store path>.alerts-outbox` and retry with
+backoff (30 s doubling to 1 h), in order. An alert that has failed
+`[alerts] max_attempts` times (default 5: retries over ~7.5 minutes) stops holding its
+channel: newer alerts go out past it. It is *parked* (kept, never retried)
+once it fails again after the channel has delivered other alerts since its
+previous failure, i.e. when the message, not the relay, is the problem. A
+relay outage therefore never parks anything. Independently, any alert
+undelivered for `[alerts] max_age_s` (default 7 days) is parked as stale.
+
+Parked alerts show in health and the fleet heartbeat as `alert_parked`
+(per channel), and each parking sends an `alert_parked` event to central.
+Inspect and retry them on the node, as the service user:
+
+```sh
+quietroom-node --config /etc/quietroom/config.toml --outbox list --parked
+quietroom-node --config /etc/quietroom/config.toml --outbox requeue --id 12
+quietroom-node --config /etc/quietroom/config.toml --outbox requeue --all --channel email
+```
+
+A requeued alert keeps its place in line with a fresh attempt budget and age;
+the running node sends it on its next tick.

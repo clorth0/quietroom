@@ -126,6 +126,10 @@ def heartbeat_payload(ident, health, now=None):
         "anchors": health.get("anchors", {}),
         "incident_hold": health.get("incident_hold", {}),
         "rebaseline_deferred": health.get("rebaseline_deferred", {}),
+        # alert delivery: queued, dead-lettered, and why the last flush failed
+        "alert_outbox": health.get("alert_outbox", {}),
+        "alert_parked": health.get("alert_parked", {}),
+        "alert_delivery_errors": health.get("alert_delivery_errors", {}),
     }
 
 
