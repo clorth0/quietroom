@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 from quietroom.config import default_config, load_config
 from quietroom.node.service import MonitorService
 
@@ -18,6 +19,68 @@ def _device(demo, cfg=None):
     from quietroom.radio.hackrf import HackRFDevice
 
     return HackRFDevice()
+
+
+SMTP_PASSWORD_ENV = "QUIETROOM_SMTP_PASSWORD"
+WEBHOOK_SECRET_ENV = "QUIETROOM_WEBHOOK_SECRET"
+
+
+def build_alerting(cfg, env):
+    """Alert engine plus one queued delivery channel per configured sink.
+
+    Every channel goes through a SQLite Outbox (next to the store when one is
+    configured, else in memory), so a failed send is retried with backoff on
+    later ticks instead of being lost or raised into the sweep loop. Secrets
+    come from `env` only.
+    """
+    from quietroom.alerts import (
+        AlertEngine,
+        AlertRule,
+        EmailNotifier,
+        Outbox,
+        QueuedChannel,
+        WebhookNotifier,
+    )
+
+    sinks = []
+    if cfg.webhook_url:
+        sinks.append(
+            ("webhook", WebhookNotifier(cfg.webhook_url, secret=env.get(WEBHOOK_SECRET_ENV)).send)
+        )
+    if cfg.email is not None:
+        e = cfg.email
+        password = env.get(SMTP_PASSWORD_ENV)
+        if e.username and not password:
+            raise SystemExit(
+                f"[alerts.email] username {e.username!r} set but {SMTP_PASSWORD_ENV} is empty"
+            )
+        sinks.append(
+            (
+                "email",
+                EmailNotifier(
+                    e.from_addr,
+                    e.to_addrs,
+                    host=e.host,
+                    port=e.port,
+                    starttls=e.starttls,
+                    ssl=e.ssl,
+                    username=e.username,
+                    password=password,
+                    ca_file=e.ca_file,
+                    timeout=e.timeout_s,
+                ).send,
+            )
+        )
+    if not sinks:
+        return None, []
+    path = (cfg.store_path + ".alerts-outbox") if cfg.store_path else ":memory:"
+    channels = [
+        QueuedChannel(name, send, Outbox(path, channel=name, backoff_s=30, max_backoff_s=3600))
+        for name, send in sinks
+    ]
+    rule = AlertRule(min_score=cfg.alert_min_score, cooldown_s=cfg.alert_cooldown_s)
+    engine = AlertEngine([rule])
+    return engine, channels
 
 
 def main(argv=None):
@@ -44,21 +107,9 @@ def main(argv=None):
 
         store = Store(cfg.store_path)
         store.upsert_node(cfg.node_id, cfg.site, cfg.floor, cfg.room)
-    alert_engine = None
-    notifiers = []
-    if cfg.webhook_url:
-        import os
-        from quietroom.alerts import AlertEngine, AlertRule, WebhookNotifier
-
-        alert_engine = AlertEngine(
-            [AlertRule(min_score=cfg.alert_min_score, cooldown_s=cfg.alert_cooldown_s)]
-        )
-        notifiers = [
-            WebhookNotifier(cfg.webhook_url, secret=os.environ.get("QUIETROOM_WEBHOOK_SECRET")).send
-        ]
+    alert_engine, notifiers = build_alerting(cfg, os.environ)
     fleet = None
     if cfg.fleet_base_url:
-        import os
         from quietroom.fleet import FleetClient
 
         fleet = FleetClient(

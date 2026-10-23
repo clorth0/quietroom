@@ -10,6 +10,7 @@ def test_systemd_unit_is_hardened_and_watchdogged():
         "User=quietroom", "Restart=on-failure", "WatchdogSec=120", "NotifyAccess=main",
         "NoNewPrivileges=true", "ProtectSystem=strict",
         "ReadWritePaths=/var/lib/quietroom", "WantedBy=multi-user.target",
+        "EnvironmentFile=-/etc/quietroom/secrets.env",
     ]
     for needle in needles:
         assert needle in u, needle

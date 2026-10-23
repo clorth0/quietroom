@@ -18,3 +18,13 @@ Operator/site responsibilities until automated:
   node-down/security event, not proof of tampering.
 - Updates: stage during a maintenance window, verify `current_version()`,
   keep one known-good `previous` release; test rollback quarterly.
+
+## Alert secrets
+
+SMTP and webhook secrets are read from the environment only
+(`QUIETROOM_SMTP_PASSWORD`, `QUIETROOM_WEBHOOK_SECRET`); the config loader
+rejects a `password` key in `[alerts.email]`. Under systemd put them in
+`/etc/quietroom/secrets.env` (owner `root:quietroom`, mode `0640`), which the
+unit loads via `EnvironmentFile=`. SMTP AUTH is refused without STARTTLS or
+implicit TLS, STARTTLS is mandatory (not opportunistic) when enabled, and the
+server certificate is verified (system trust, or `ca_file` for a private relay).

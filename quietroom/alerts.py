@@ -118,54 +118,178 @@ class WebhookNotifier:
 
 
 class EmailNotifier:
-    def __init__(self, from_addr, to_addrs, host="localhost", port=25, smtp_factory=None):
+    """Send an alert as a plain-text email over SMTP (stdlib smtplib).
+
+    TLS is verified against the system trust store, or `ca_file` for a private
+    relay. Note smtplib's own starttls() default context does *not* check the
+    server certificate; we always pass a verifying context. Credentials are
+    only ever sent after TLS is up: STARTTLS is required (not opportunistic)
+    when `starttls` is set, and the caller refuses username-without-TLS.
+    """
+
+    def __init__(
+        self,
+        from_addr,
+        to_addrs,
+        host="localhost",
+        port=25,
+        smtp_factory=None,
+        *,
+        starttls=False,
+        ssl=False,
+        username="",
+        password=None,
+        ca_file="",
+        timeout=10.0,
+    ):
         self.from_addr = from_addr
         self.to_addrs = list(to_addrs)
         self.host = host
         self.port = port
-        self.smtp_factory = smtp_factory or smtplib.SMTP
+        self.smtp_factory = smtp_factory
+        self.starttls = starttls
+        self.ssl = ssl
+        self.username = username
+        self.password = password
+        self.ca_file = ca_file
+        self.timeout = timeout
 
-    def send(self, payload):
+    def _tls_context(self):
+        import ssl as _ssl
+
+        return _ssl.create_default_context(cafile=self.ca_file or None)
+
+    def _connect(self):
+        if self.smtp_factory is not None:
+            return self.smtp_factory(self.host, self.port)
+        if self.ssl:
+            return smtplib.SMTP_SSL(
+                self.host, self.port, timeout=self.timeout, context=self._tls_context()
+            )
+        return smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+
+    def message(self, payload):
         msg = EmailMessage()
         msg["From"] = self.from_addr
         msg["To"] = ", ".join(self.to_addrs)
-        msg["Subject"] = f"[quietroom] alert {payload.get('node_id')} {payload.get('freq_hz', '')}"
-        msg.set_content(json.dumps(payload, indent=2, sort_keys=True))
-        with self.smtp_factory(self.host, self.port) as s:
+        freq = payload.get("freq_hz")
+        where = f"{freq / 1e6:.3f} MHz" if isinstance(freq, (int, float)) else ""
+        score = payload.get("score")
+        sc = f" score {score:.0f}" if isinstance(score, (int, float)) else ""
+        msg["Subject"] = (
+            f"[quietroom] alert {payload.get('node_id')} {payload.get('segment') or ''} "
+            f"{where}{sc}"
+        ).replace("  ", " ")
+        msg.set_content(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return msg
+
+    def send(self, payload):
+        msg = self.message(payload)
+        with self._connect() as s:
+            if self.starttls and not self.ssl:
+                s.ehlo()
+                if not s.has_extn("starttls"):
+                    raise smtplib.SMTPNotSupportedError("server does not offer STARTTLS")
+                s.starttls(context=self._tls_context())
+                s.ehlo()
+            if self.username:
+                s.login(self.username, self.password or "")
             s.sendmail(self.from_addr, self.to_addrs, msg.as_string())
 
 
-class Outbox:
-    """SQLite-backed delivery queue: at-least-once with retry on failure."""
+_OUTBOX_COLUMNS = {
+    "channel": "TEXT DEFAULT 'default'",
+    "next_attempt_at": "REAL DEFAULT 0",
+    "last_error": "TEXT DEFAULT ''",
+}
 
-    def __init__(self, path):
+
+class Outbox:
+    """SQLite-backed delivery queue: at-least-once with retry on failure.
+
+    One table, partitioned by `channel`, so webhook and email retry
+    independently (a down SMTP relay never re-sends an already-delivered
+    webhook). Delivery is FIFO; a failed head row backs off exponentially from
+    `backoff_s` up to `max_backoff_s` and holds the channel until it is due,
+    and with `stop_on_failure` a flush stops at the first failure, so a dead
+    server costs one timeout per backoff period, not one per queued alert.
+    Nothing is dropped: rows stay until delivered.
+    """
+
+    def __init__(self, path, channel="default", backoff_s=0.0, max_backoff_s=3600.0, clock=None):
         self.db = sqlite3.connect(str(path))
+        self.channel = channel
+        self.backoff_s = float(backoff_s)
+        self.max_backoff_s = float(max_backoff_s)
+        self.clock = clock or time.time
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS outbox("
             "id INTEGER PRIMARY KEY, payload TEXT, attempts INTEGER DEFAULT 0)"
         )
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(outbox)")}
+        for col, decl in _OUTBOX_COLUMNS.items():
+            if col not in have:
+                self.db.execute(f"ALTER TABLE outbox ADD COLUMN {col} {decl}")
         self.db.commit()
 
     def add(self, payload):
         self.db.execute(
-            "INSERT INTO outbox(payload) VALUES(?)", (json.dumps(payload, sort_keys=True),)
+            "INSERT INTO outbox(payload,channel,next_attempt_at) VALUES(?,?,0)",
+            (json.dumps(payload, sort_keys=True, default=str), self.channel),
         )
         self.db.commit()
 
     def pending(self):
-        return self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox WHERE channel=?", (self.channel,)
+        ).fetchone()[0]
 
-    def flush(self, send):
+    def flush(self, send, stop_on_failure=True):
+        now = self.clock()
         delivered = 0
-        for row_id, payload in self.db.execute(
-            "SELECT id,payload FROM outbox ORDER BY id"
-        ).fetchall():
+        rows = self.db.execute(
+            "SELECT id,payload,attempts,next_attempt_at FROM outbox WHERE channel=? ORDER BY id",
+            (self.channel,),
+        ).fetchall()
+        # FIFO with head-of-line backoff: if the oldest alert is still backing
+        # off, the channel is backing off (it is the relay that is down, not
+        # one message), and alerts are never delivered out of order.
+        if rows and rows[0][3] > now:
+            return 0
+        rows = [r[:3] for r in rows]
+        for row_id, payload, attempts in rows:
             try:
                 send(json.loads(payload))
-            except Exception:
-                self.db.execute("UPDATE outbox SET attempts=attempts+1 WHERE id=?", (row_id,))
+            except Exception as e:
+                delay = min(self.backoff_s * (2 ** int(attempts)), self.max_backoff_s)
+                self.db.execute(
+                    "UPDATE outbox SET attempts=attempts+1, next_attempt_at=?, last_error=? "
+                    "WHERE id=?",
+                    (now + delay, f"{type(e).__name__}: {e}"[:500], row_id),
+                )
+                if stop_on_failure:
+                    break
                 continue
             self.db.execute("DELETE FROM outbox WHERE id=?", (row_id,))
             delivered += 1
         self.db.commit()
         return delivered
+
+
+class QueuedChannel:
+    """A named alert sink: calling it enqueues; flush() delivers with retries."""
+
+    def __init__(self, name, notifier_send, outbox):
+        self.name = name
+        self.send = notifier_send
+        self.outbox = outbox
+        self.notifier = getattr(notifier_send, "__self__", None)
+
+    def __call__(self, alert):
+        self.outbox.add(alert)
+
+    def flush(self):
+        return self.outbox.flush(self.send)
+
+    def pending(self):
+        return self.outbox.pending()
