@@ -52,9 +52,20 @@ def violations(source: str, filename: str = "<src>") -> list[str]:
         p = parents.get(node)
         return isinstance(p, ast.Expr)
 
+    # every name the sqlite3 module is bound to (``import sqlite3 as lite``)
+    modules = {"sqlite3"} | {
+        a.asname
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Import)
+        for a in n.names
+        if a.name == "sqlite3" and a.asname
+    }
     out = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if isinstance(node, ast.ImportFrom) and node.module == "sqlite3":
+            if any(a.name in RAW_CALLS or a.name == "*" for a in node.names):
+                out.append(f"{filename}:{node.lineno}: sqlite3 connect imported directly")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if DDL.search(node.value) and not is_docstring(node) and not inside_schema(node):
                 out.append(f"{filename}:{node.lineno}: schema DDL outside Schema(...)")
         elif isinstance(node, ast.JoinedStr):
@@ -70,7 +81,7 @@ def violations(source: str, filename: str = "<src>") -> list[str]:
             if (
                 isinstance(f, ast.Attribute)
                 and f.attr in RAW_CALLS
-                and (f.attr == "executescript" or _call_name(f.value) == "sqlite3")
+                and (f.attr == "executescript" or _call_name(f.value) in modules)
             ):
                 out.append(f"{filename}:{node.lineno}: {f.attr}() outside quietroom/sqlitedb.py")
     return sorted(set(out))
@@ -100,6 +111,8 @@ BAD = {
     "journal": 'db.execute("PRAGMA journal_mode=WAL")',
     "connect": "import sqlite3\ndb = sqlite3.connect('x.db')",
     "executescript": "db.executescript(SCHEMA)",
+    "from-import-connect": "from sqlite3 import connect\ndb = connect('x.db')",
+    "aliased-module": "import sqlite3 as lite\ndb = lite.connect('x.db')",
     "schema-constant": 'SCHEMA = """\nCREATE TABLE IF NOT EXISTS t(id INTEGER);\n"""',
 }
 GOOD = {
@@ -109,6 +122,8 @@ GOOD = {
     "dml": 'db.execute("UPDATE t SET a=1"); db.execute("INSERT INTO t VALUES(1)")',
     "docstring": 'def f():\n    """Upgrades in place with ALTER TABLE under the lock."""',
     "prose": 'msg = "the table was altered"',
+    "other-connect": "import socket\ns = socket.create_connection(('h', 1)); c.connect()",
+    "sqlite-types": "from sqlite3 import Connection, OperationalError",
 }
 
 
