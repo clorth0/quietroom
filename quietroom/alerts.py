@@ -44,11 +44,15 @@ class AlertEngine:
         self._alerts = {}  # key -> alert dict
 
     def _key(self, event, f):
-        return (
+        key = (
             event.get("node_id", ""),
             event.get("segment", ""),
             round(f["freq_hz"] / self.cluster_hz),
         )
+        kind = event.get("type", "sweep")
+        # "on air now" and "the baseline drifted from its anchor here" are
+        # different incidents; never let one's cooldown swallow the other.
+        return key if kind == "sweep" else (*key, kind)
 
     def process(self, event):
         now = float(event.get("timestamp", time.time()))
@@ -66,6 +70,7 @@ class AlertEngine:
                 continue
             alert = {
                 "key": key,
+                "event_type": event.get("type", "sweep"),
                 "node_id": event.get("node_id"),
                 "segment": event.get("segment"),
                 "freq_hz": f["freq_hz"],

@@ -122,6 +122,10 @@ def heartbeat_payload(ident, health, now=None):
         "baselines": health.get("baselines", []),
         "segments": health.get("last_run", {}),
         "last_error": health.get("last_error"),
+        # learning safety rails: anchor divergence, incident holds, waiting refreshes
+        "anchors": health.get("anchors", {}),
+        "incident_hold": health.get("incident_hold", {}),
+        "rebaseline_deferred": health.get("rebaseline_deferred", {}),
     }
 
 
