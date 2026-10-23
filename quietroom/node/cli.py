@@ -8,9 +8,17 @@ import ssl
 import sys
 import time
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from quietroom.config import FleetConfig, NodeConfig, default_config, load_config, parse_freq
+from quietroom.config import (
+    ConfigError,
+    FleetConfig,
+    NodeConfig,
+    config_warnings,
+    default_config,
+    load_config,
+    parse_freq,
+)
 from quietroom.node.service import MonitorService
 
 if TYPE_CHECKING:
@@ -21,6 +29,14 @@ CENTRAL_TOKEN_ENV = "QUIETROOM_CENTRAL_TOKEN"
 
 def _fleet_outbox(cfg: NodeConfig) -> str:
     return (cfg.store_path + ".fleet-outbox") if cfg.store_path else ":memory:"
+
+
+def _outbox_bounds(fc: FleetConfig) -> dict:
+    return {
+        "max_rows": fc.outbox_max_rows,
+        "max_age_s": fc.outbox_max_age_s,
+        "max_attempts": fc.outbox_max_attempts,
+    }
 
 
 def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, list[str]]:
@@ -51,7 +67,8 @@ def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, l
             raise SystemExit(f'[fleet] auth = "legacy-token" needs ${CENTRAL_TOKEN_ENV}')
         pinned = ssl.create_default_context(cafile=fc.ca_file) if fc.ca_file else None
         client = FleetClient(
-            fc.base_url, token=token, outbox_path=_fleet_outbox(cfg), ssl_context=pinned
+            fc.base_url, token=token, outbox_path=_fleet_outbox(cfg), ssl_context=pinned,
+            **_outbox_bounds(fc),
         )
         return client, [
             "fleet auth is the legacy shared bearer token (deprecated, "
@@ -96,6 +113,7 @@ def build_fleet(cfg: NodeConfig, env: Mapping[str, str]) -> tuple[FleetClient, l
             node_uuid=node_uuid,
             cert_not_after=not_after,
             cert_warn_s=warn_s,
+            **_outbox_bounds(fc),
         ),
         warnings,
     )
@@ -249,34 +267,63 @@ def _alerts_outbox(cfg: NodeConfig) -> str:
 
 
 def outbox_command(cfg: NodeConfig, a: argparse.Namespace) -> int:
-    """``--outbox list|requeue``: inspect / requeue the alert outbox file directly.
+    """``--outbox list|requeue``: inspect / requeue an outbox file directly.
 
-    Safe while the node runs (SQLite locking); a requeued alert goes out on the
-    node's next tick.
+    The alert outbox by default; ``--channel fleet`` selects the fleet upload
+    outbox. Safe while the node runs (SQLite locking); a requeued row goes out
+    on the node's next tick.
     """
     from quietroom.alerts import outbox_rows, requeue_parked
+    from quietroom.fleet import fleet_outbox_rows, requeue_fleet_parked
 
     if not cfg.store_path:
         raise SystemExit("--outbox needs a [store] path (the outbox lives next to the store)")
-    path = _alerts_outbox(cfg)
+    fleet = a.channel == "fleet"
+    path = _fleet_outbox(cfg) if fleet else _alerts_outbox(cfg)
     if a.outbox == "list":
         if not os.path.exists(path):
             return 0
-        for r in outbox_rows(path, channel=a.channel, parked=True if a.parked else None):
+        parked = True if a.parked else None
+        rows = (
+            fleet_outbox_rows(path, parked=parked)
+            if fleet
+            else outbox_rows(path, channel=a.channel, parked=parked)
+        )
+        for r in rows:
             r["state"] = "parked" if r["parked_at"] is not None else "pending"
             print(json.dumps(r, default=str))
         return 0
     if not os.path.exists(path):
-        print("nothing parked: no alert outbox yet", file=sys.stderr)
+        print(f"nothing parked: no {'fleet' if fleet else 'alert'} outbox yet", file=sys.stderr)
         return 1
     ids = None if a.all else a.ids
-    got = requeue_parked(path, ids=ids, channel=a.channel)
+    got = (
+        requeue_fleet_parked(path, ids=ids)
+        if fleet
+        else requeue_parked(path, ids=ids, channel=a.channel)
+    )
     print(json.dumps({"requeued": got}))
     if ids is not None and set(ids) - set(got):
         missing = sorted(set(ids) - set(got))
         print(f"not parked (or no such row): {missing}", file=sys.stderr)
         return 1
     return 0
+
+
+def _report_invalid_config(e: ConfigError) -> int:
+    """--check-config on a config that does not load: same report shape, ok=false."""
+    report: dict[str, Any] = {
+        "config": None,
+        "ok": False,
+        "errors": [str(i) for i in e.issues],
+        "warnings": [],
+        "config_errors": [{"key": i.key, "message": i.message} for i in e.issues],
+        "source": e.source,
+    }
+    print(json.dumps(report, indent=2))
+    for err in report["errors"]:
+        print(f"ERROR: {err}", file=sys.stderr)
+    return 1
 
 
 def main(argv=None):
@@ -335,7 +382,11 @@ def main(argv=None):
         "--outbox", choices=("list", "requeue"),
         help="list queued/parked alerts as JSON lines, or requeue parked ones",
     )
-    ob.add_argument("--channel", help="with --outbox: only this channel (email, webhook)")
+    ob.add_argument(
+        "--channel",
+        help="with --outbox: only this alert channel (email, webhook), or fleet for the "
+        "fleet upload outbox",
+    )
     ob.add_argument("--parked", action="store_true", help="with --outbox list: parked only")
     ob.add_argument(
         "--id", dest="ids", type=int, action="append",
@@ -355,7 +406,16 @@ def main(argv=None):
         p.error("--parked only applies to --outbox list")
     if a.outbox is None and a.channel:
         p.error("--channel only applies to --outbox")
-    cfg = load_config(a.config) if a.config else default_config()
+    try:
+        cfg = load_config(a.config) if a.config else default_config()
+    except ConfigError as err:
+        if a.check_config:
+            return _report_invalid_config(err)
+        print(f"quietroom-node: {err}", file=sys.stderr, flush=True)
+        return 2
+    except OSError as err:
+        print(f"quietroom-node: cannot read config: {err}", file=sys.stderr, flush=True)
+        return 2
     if a.outbox:
         return outbox_command(cfg, a)
     if a.check_config:
@@ -384,6 +444,8 @@ def main(argv=None):
 
         store = Store(cfg.store_path)
         store.upsert_node(cfg.node_id, cfg.site, cfg.floor, cfg.room)
+    for w in config_warnings(cfg):
+        print(f"quietroom-node: WARNING: {w}", file=sys.stderr, flush=True)
     alert_engine, notifiers = build_alerting(cfg, os.environ)
     fleet = None
     fleet_warnings: list[str] = []

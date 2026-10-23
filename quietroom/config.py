@@ -1,26 +1,134 @@
-"""Node configuration (TOML) for unattended floor-monitoring nodes."""
+"""Node configuration (TOML) for unattended floor-monitoring nodes.
+
+Loading is strict: every key is checked against the schema below
+(``quietroom.configschema``) and every problem is reported at once as a
+:class:`ConfigError` naming the key and what is allowed, so a typo or a
+nonsense value stops the node at start-up instead of being silently ignored.
+"""
 
 from __future__ import annotations
+
 import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import PurePath
-from typing import Literal
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
 from quietroom.bands import REGIONS
-from quietroom.engine.plan import SweepPlan
+from quietroom.configschema import (
+    MISSING,
+    ConfigError,
+    ConfigIssue,
+    Field,
+    check_section,
+    join,
+    parse_freq,
+    unknown_key_issue,
+)
+from quietroom.engine.plan import DEFAULT_START_HZ, DEFAULT_STOP_HZ, SweepPlan
 from quietroom.node.rebaseline import RebaselinePolicy
+from quietroom.radio.limits import DEFAULT_BIN_HZ
 
-_FREQ_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmg]?)(?:hz)?\s*$", re.I)
-_SCALE = {"": 1, "k": 1e3, "m": 1e6, "g": 1e9}
+__all__ = [
+    "ConfigError",
+    "ConfigIssue",
+    "EmailConfig",
+    "FleetConfig",
+    "NodeConfig",
+    "SegmentConfig",
+    "config_warnings",
+    "default_config",
+    "load_config",
+    "parse_freq",
+]
+
+# Score is squashed into [0, 100) by engine/score.py: 100 can never be reached,
+# so a threshold of 100 would silently disable alerting.
+DAY = 86400.0
 
 
-def parse_freq(v):
-    if isinstance(v, int):
-        return v
-    m = _FREQ_RE.match(str(v))
-    if not m:
-        raise ValueError(f"invalid frequency {v!r}")
-    return int(round(float(m.group(1)) * _SCALE[m.group(2).lower()]))
+def _score(default: float | None) -> Field:
+    return Field("float", default, lo=0.0, hi=100.0, hi_open=True)
+
+
+
+NODE_FIELDS = {
+    "id": Field("str", "quietroom-node", nonempty=True),
+    "site": Field("str", ""),
+    "floor": Field("str", ""),
+    "room": Field("str", ""),
+    "region": Field("str", "us", choices=tuple(REGIONS), lower=True),
+    "threshold_k": Field("float", 4.0, lo=0, lo_open=True),
+    "baseline_cycles": Field("int", 5, lo=1, hi=1000),
+    # Each loop pings the systemd watchdog (WatchdogSec=120), so a poll longer
+    # than a minute risks a watchdog kill; under 0.1 s is a busy loop.
+    "poll_s": Field("float", 1.0, lo=0.1, hi=60.0),
+    "antenna": Field("str", ""),
+}
+SEGMENT_FIELDS = {
+    "name": Field("str", nonempty=True),
+    "mode": Field("str", "search", choices=("search", "overview")),
+    "start_hz": Field("freq", None),
+    "start": Field("freq", None),
+    "stop_hz": Field("freq", None),
+    "stop": Field("freq", None),
+    "bin_hz": Field("freq", None),
+    "bin": Field("freq", None),
+    "interval_s": Field("float", 60.0, lo=0, lo_open=True),
+    # Only a tiebreak among due segments (higher runs first).
+    "priority": Field("int", 0, lo=0, hi=100),
+    "enabled": Field("bool", True),
+}
+STORE_FIELDS = {"path": Field("str", "")}
+ALERT_FIELDS = {
+    "min_score": _score(80.0),
+    "cooldown_s": Field("float", 3600.0, lo=0),
+    "webhook_url": Field("url", "", schemes=("http", "https")),
+    "max_attempts": Field("int", 5, lo=0, note="(0 = never)"),
+    "max_age_s": Field("float", 7 * DAY, lo=0, note="(0 = never)"),
+}
+BASELINE_FIELDS = {
+    "max_age_s": Field("float", 0.0, lo=0, note="(0 = never)"),
+    "drift_window": Field("int", 0, lo=2, also=(0,), note="(0 = off)"),
+    "drift_mean_db": Field("float", 3.0, lo=0, lo_open=True),
+    "drift_changed_fraction": Field("float", 0.10, lo=0, lo_open=True, hi=1.0),
+    "freeze_score": _score(None),
+    "incident_hold_s": Field("float", 3600.0, lo=0),
+    "invalidate_on_fingerprint": Field("bool", True),
+}
+EMAIL_FIELDS = {
+    "host": Field("str", nonempty=True),
+    "port": Field("int", None, lo=1, hi=65535),
+    "starttls": Field("bool", None),
+    "ssl": Field("bool", False),
+    "from": Field("str"),
+    "to": Field("addresses"),
+    "username": Field("str", ""),
+    "ca_file": Field("str", ""),
+    "timeout_s": Field("float", 10.0, lo=0, lo_open=True),
+}
+FLEET_FIELDS = {
+    "base_url": Field("url", "", schemes=("http", "https")),
+    "heartbeat_s": Field("float", 60.0, lo=0, lo_open=True),
+    "auth": Field("str", "mtls", choices=("mtls", "legacy-token")),
+    "cert_file": Field("str", ""),
+    "key_file": Field("str", ""),
+    "ca_file": Field("str", ""),
+    "identity_path": Field("str", ""),
+    "cert_warn_days": Field("float", 30.0, lo=0, note="(0 = no warning)"),
+    # The node-side queue of undelivered uploads. The row bound cannot be
+    # switched off: a node cut off from central must not fill its disk.
+    "outbox_max_rows": Field("int", 20_000, lo=1),
+    "outbox_max_age_s": Field("float", 7 * DAY, lo=0, note="(0 = never)"),
+    "outbox_max_attempts": Field("int", 5, lo=0, note="(0 = never)"),
+}
+SECTIONS = ("node", "segments", "store", "alerts", "baseline", "fleet")
+
+
+def _raise(issues: list[ConfigIssue]) -> None:
+    if issues:
+        raise ConfigError(issues)
 
 
 @dataclass(frozen=True)
@@ -32,60 +140,80 @@ class SegmentConfig:
     enabled: bool = True
 
     @classmethod
-    def from_dict(cls, d):
-        if not d.get("name"):
-            raise ValueError("segment needs a name")
-        interval = float(d.get("interval_s", 60))
-        if interval <= 0:
-            raise ValueError(f"segment {d['name']}: interval_s must be > 0")
-        make = (
-            SweepPlan.overview if str(d.get("mode", "search")) == "overview" else SweepPlan.search
+    def from_dict(cls, d: Any) -> SegmentConfig:
+        issues: list[ConfigIssue] = []
+        seg = cls._parse(d, "segments[0]", issues)
+        _raise(issues)
+        assert seg is not None
+        return seg
+
+    @classmethod
+    def _parse(cls, d: Any, prefix: str, issues: list[ConfigIssue]) -> SegmentConfig | None:
+        n = len(issues)
+        v = check_section(prefix, d, SEGMENT_FIELDS, issues)
+        hz: dict[str, int] = {}
+        for long, short, default in (
+            ("start_hz", "start", MISSING),
+            ("stop_hz", "stop", MISSING),
+            ("bin_hz", "bin", 25_000),
+        ):
+            if not isinstance(d, dict):
+                break
+            if long in d and short in d:
+                issues.append(
+                    ConfigIssue(join(prefix, short), f"give either {long} or {short}, not both")
+                )
+            elif long not in d and short not in d:
+                if default is MISSING:
+                    issues.append(
+                        ConfigIssue(join(prefix, long), f"is required ({long} or {short})")
+                    )
+                else:
+                    hz[long] = default
+            else:
+                got = v.get(long) if long in d else v.get(short)
+                if got is not None:
+                    hz[long] = got
+        if len(issues) > n:
+            return None
+        make = SweepPlan.overview if v["mode"] == "overview" else SweepPlan.search
+        try:
+            plan = make(hz["start_hz"], hz["stop_hz"], hz["bin_hz"])
+        except ValueError as e:
+            issues.append(ConfigIssue(prefix, f"invalid sweep: {e}"))
+            return None
+        return cls(v["name"], plan, v["interval_s"], v["priority"], v["enabled"])
+
+
+def _rebaseline_policy(
+    b: Any, alert_min_score: float, issues: list[ConfigIssue]
+) -> RebaselinePolicy:
+    n = len(issues)
+    v = check_section("baseline", b, BASELINE_FIELDS, issues)
+    if len(issues) > n:
+        return RebaselinePolicy()
+    try:
+        return RebaselinePolicy(
+            max_age_s=v["max_age_s"] or None,
+            drift_window=v["drift_window"],
+            drift_mean_db=v["drift_mean_db"],
+            drift_changed_fraction=v["drift_changed_fraction"],
+            freeze_score=alert_min_score if v["freeze_score"] is None else v["freeze_score"],
+            incident_hold_s=v["incident_hold_s"],
+            invalidate_on_fingerprint=v["invalidate_on_fingerprint"],
         )
-        plan = make(
-            parse_freq(d["start_hz"] if "start_hz" in d else d["start"]),
-            parse_freq(d["stop_hz"] if "stop_hz" in d else d["stop"]),
-            parse_freq(d.get("bin_hz", d.get("bin", 25000))),
-        )
-        return cls(
-            str(d["name"]), plan, interval, int(d.get("priority", 0)), bool(d.get("enabled", True))
-        )
+    except ValueError as e:  # pragma: no cover - the schema covers the same rules
+        issues.append(ConfigIssue("baseline", str(e)))
+        return RebaselinePolicy()
 
 
-_BASELINE_KEYS = {
-    "max_age_s",
-    "drift_window",
-    "drift_mean_db",
-    "drift_changed_fraction",
-    "freeze_score",
-    "incident_hold_s",
-    "invalidate_on_fingerprint",
-}
-
-
-def _rebaseline_policy(b, alert_min_score):
-    unknown = set(b) - _BASELINE_KEYS
-    if unknown:
-        raise ValueError(f"unknown [baseline] keys: {', '.join(sorted(unknown))}")
-    max_age = b.get("max_age_s")
-    return RebaselinePolicy(
-        max_age_s=None if max_age in (None, 0) else float(max_age),
-        drift_window=int(b.get("drift_window", 0)),
-        drift_mean_db=float(b.get("drift_mean_db", 3.0)),
-        drift_changed_fraction=float(b.get("drift_changed_fraction", 0.10)),
-        freeze_score=float(b.get("freeze_score", alert_min_score)),
-        incident_hold_s=float(b.get("incident_hold_s", 3600.0)),
-        invalidate_on_fingerprint=bool(b.get("invalidate_on_fingerprint", True)),
-    )
 _ADDR_RE = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+$")
-_EMAIL_KEYS = {
-    "host", "port", "starttls", "ssl", "from", "to", "username", "ca_file", "timeout_s",
-}
 
 
-def _address(v, what):
-    v = str(v)
+def _address(v: str, key: str, issues: list[ConfigIssue]) -> str:
     if not _ADDR_RE.match(v):
-        raise ValueError(f"[alerts.email] {what}: invalid address {v!r}")
+        # An address is not a secret; echoing it helps spot the typo.
+        issues.append(ConfigIssue(key, f"invalid address {v!r}"))
     return v
 
 
@@ -105,64 +233,49 @@ class EmailConfig:
     timeout_s: float = 10.0
 
     @classmethod
-    def from_dict(cls, d):
-        if "password" in d:
-            raise ValueError(
-                "[alerts.email] password must not be in the config file; "
-                "set QUIETROOM_SMTP_PASSWORD in the service environment"
-            )
-        unknown = set(d) - _EMAIL_KEYS
-        if unknown:
-            raise ValueError(f"unknown [alerts.email] keys: {', '.join(sorted(unknown))}")
-        if not d.get("host"):
-            raise ValueError("[alerts.email] needs a host")
-        if not d.get("from"):
-            raise ValueError("[alerts.email] needs a from address")
-        to = d.get("to")
-        to_list = [to] if isinstance(to, str) else list(to or [])
-        if not to_list:
-            raise ValueError("[alerts.email] needs at least one to address")
-        ssl_on = bool(d.get("ssl", False))
-        starttls = bool(d.get("starttls", not ssl_on))
+    def from_dict(cls, d: Any) -> EmailConfig:
+        issues: list[ConfigIssue] = []
+        cfg = cls._parse(d, issues)
+        _raise(issues)
+        assert cfg is not None
+        return cfg
+
+    @classmethod
+    def _parse(cls, d: Any, issues: list[ConfigIssue]) -> EmailConfig | None:
+        p = "alerts.email"
+        n = len(issues)
+        v = check_section(p, d, EMAIL_FIELDS, issues)
+        if "from" in v:
+            _address(v["from"], f"{p}.from", issues)
+        for a in v.get("to", []):
+            _address(a, f"{p}.to", issues)
+        ssl_on = v.get("ssl", False)
+        starttls = (not ssl_on) if v.get("starttls") is None else v["starttls"]
         if ssl_on and starttls:
-            raise ValueError("[alerts.email] set ssl or starttls, not both")
-        port = int(d.get("port", 465 if ssl_on else 587))
-        if not 0 < port < 65536:
-            raise ValueError(f"[alerts.email] port {port} out of range")
-        username = str(d.get("username", ""))
-        if username and not (ssl_on or starttls):
-            raise ValueError(
-                "[alerts.email] username set without starttls/ssl: refusing plaintext AUTH"
+            issues.append(ConfigIssue(f"{p}.ssl", "set ssl or starttls, not both"))
+        if v.get("username") and not (ssl_on or starttls):
+            issues.append(
+                ConfigIssue(
+                    f"{p}.username",
+                    "username set without starttls/ssl: refusing plaintext AUTH",
+                )
             )
-        timeout = float(d.get("timeout_s", 10.0))
-        if timeout <= 0:
-            raise ValueError("[alerts.email] timeout_s must be > 0")
+        if len(issues) > n:
+            return None
         return cls(
-            host=str(d["host"]),
-            from_addr=_address(d["from"], "from"),
-            to_addrs=tuple(_address(a, "to") for a in to_list),
-            port=port,
+            host=v["host"],
+            from_addr=v["from"],
+            to_addrs=tuple(v["to"]),
+            port=v["port"] if v["port"] is not None else (465 if ssl_on else 587),
             starttls=starttls,
             ssl=ssl_on,
-            username=username,
-            ca_file=str(d.get("ca_file", "")),
-            timeout_s=timeout,
+            username=v["username"],
+            ca_file=v["ca_file"],
+            timeout_s=v["timeout_s"],
         )
 
 
 FleetAuth = Literal["mtls", "legacy-token"]
-_FLEET_KEYS = frozenset(
-    {
-        "base_url",
-        "heartbeat_s",
-        "auth",
-        "cert_file",
-        "key_file",
-        "ca_file",
-        "identity_path",
-        "cert_warn_days",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -176,6 +289,8 @@ class FleetConfig:
     ``QUIETROOM_CENTRAL_TOKEN`` env var; ``ca_file`` optionally pins central.
     ``cert_warn_days``: warn (health, heartbeat) this long before the client
     certificate expires; 0 disables the warning.
+    ``outbox_max_*``: bounds on the local queue of undelivered uploads (see
+    ``quietroom.fleet.FleetClient``).
     """
 
     base_url: str
@@ -186,49 +301,62 @@ class FleetConfig:
     ca_file: str = ""
     identity_path: str = ""
     cert_warn_days: float = 30.0
+    outbox_max_rows: int = 20_000
+    outbox_max_age_s: float = 7 * DAY
+    outbox_max_attempts: int = 5
 
     @classmethod
-    def from_dict(cls, d, store_path: str = "") -> FleetConfig | None:
-        if "token" in d:
-            raise ValueError(
-                "[fleet] token must not be stored in the config; use the "
-                "QUIETROOM_CENTRAL_TOKEN environment variable (legacy-token auth only)"
-            )
-        unknown = set(d) - _FLEET_KEYS
-        if unknown:
-            raise ValueError(f"[fleet] unknown keys: {sorted(unknown)}")
-        base = str(d.get("base_url", ""))
-        if not base:
+    def from_dict(cls, d: Any, store_path: str = "") -> FleetConfig | None:
+        issues: list[ConfigIssue] = []
+        cfg = cls._parse(d, store_path, issues)
+        _raise(issues)
+        return cfg
+
+    @classmethod
+    def _parse(cls, d: Any, store_path: str, issues: list[ConfigIssue]) -> FleetConfig | None:
+        n = len(issues)
+        v = check_section("fleet", d, FLEET_FIELDS, issues)
+        if len(issues) > n or not v["base_url"]:
             return None
-        auth = str(d.get("auth", "mtls"))
-        if auth not in ("mtls", "legacy-token"):
-            raise ValueError(f"[fleet] auth must be 'mtls' or 'legacy-token', got {auth!r}")
-        heartbeat = float(d.get("heartbeat_s", 60.0))
-        if heartbeat <= 0:
-            raise ValueError("[fleet] heartbeat_s must be > 0")
-        warn = d.get("cert_warn_days", 30.0)
-        if isinstance(warn, bool) or not isinstance(warn, (int, float)) or warn < 0:
-            raise ValueError(f"[fleet] cert_warn_days must be a number >= 0, got {warn!r}")
-        files = {k: str(d.get(k, "")) for k in ("cert_file", "key_file", "ca_file")}
-        identity = str(d.get("identity_path", ""))
+        base, auth = v["base_url"], v["auth"]
+        identity = v["identity_path"]
         if not identity and store_path:
             identity = str(PurePath(store_path).with_name("identity.json"))
+        files = {k: v[k] for k in ("cert_file", "key_file", "ca_file")}
         if auth == "mtls":
-            missing = [k for k, v in files.items() if not v]
+            missing = [k for k, f in files.items() if not f]
             if missing:
-                raise ValueError(
-                    f"[fleet] auth = 'mtls' (the default) needs {', '.join(missing)}. "
-                    "Issue this node a client certificate for its UUID "
-                    "(quietroom-node --print-identity); to keep the deprecated shared "
-                    'bearer token meanwhile, set auth = "legacy-token" explicitly'
+                issues.append(
+                    ConfigIssue(
+                        "fleet.auth",
+                        f"auth = 'mtls' (the default) needs {', '.join(missing)}. "
+                        "Issue this node a client certificate for its UUID "
+                        "(quietroom-node --print-identity); to keep the deprecated shared "
+                        'bearer token meanwhile, set auth = "legacy-token" explicitly',
+                    )
                 )
-            if not base.lower().startswith("https://"):
-                raise ValueError(f"[fleet] mTLS needs an https:// base_url, got {base!r}")
+            if urlsplit(base).scheme.lower() != "https":
+                issues.append(
+                    ConfigIssue("fleet.base_url", "mTLS needs an https:// base_url")
+                )
             if not identity:
-                raise ValueError("[fleet] mTLS needs identity_path (or a [store] path)")
+                issues.append(
+                    ConfigIssue(
+                        "fleet.identity_path", "mTLS needs identity_path (or a [store] path)"
+                    )
+                )
+        if len(issues) > n:
+            return None
         return cls(
-            base, heartbeat, "mtls" if auth == "mtls" else "legacy-token", identity_path=identity,
-            cert_warn_days=float(warn), **files,
+            base,
+            v["heartbeat_s"],
+            "mtls" if auth == "mtls" else "legacy-token",
+            identity_path=identity,
+            cert_warn_days=v["cert_warn_days"],
+            outbox_max_rows=v["outbox_max_rows"],
+            outbox_max_age_s=v["outbox_max_age_s"],
+            outbox_max_attempts=v["outbox_max_attempts"],
+            **files,
         )
 
 
@@ -257,7 +385,7 @@ class NodeConfig:
     # (and is parked once the channel delivers others); 0 = never.
     alert_max_attempts: int = 5
     # Park any alert undelivered for this long; 0 = never.
-    alert_max_age_s: float = 7 * 86400.0
+    alert_max_age_s: float = 7 * DAY
 
     @property
     def fleet_base_url(self) -> str:
@@ -268,49 +396,74 @@ class NodeConfig:
         return self.fleet.heartbeat_s if self.fleet else 60.0
 
     @classmethod
-    def from_dict(cls, d):
-        n = d.get("node", {})
-        region = str(n.get("region", "us")).lower()
-        if region not in REGIONS:
-            raise ValueError(f"unknown region {region!r}")
-        segs = tuple(SegmentConfig.from_dict(x) for x in d.get("segments", []))
-        if not segs:
-            raise ValueError("config needs at least one [[segments]] entry")
-        names = [s.name for s in segs]
-        if len(set(names)) != len(names):
-            raise ValueError("segment names must be unique")
-        k = float(n.get("threshold_k", 4.0))
-        if k <= 0:
-            raise ValueError("threshold_k must be > 0")
-        cycles = int(n.get("baseline_cycles", 5))
-        if cycles < 1:
-            raise ValueError("baseline_cycles must be >= 1")
-        store = d.get("store", {})
-        alerts = d.get("alerts", {})
-        fleet = d.get("fleet", {})
-        alert_min = float(alerts.get("min_score", 80.0))
-        rebaseline = _rebaseline_policy(d.get("baseline", {}), alert_min)
-        return cls(
-            str(n.get("id", "quietroom-node")),
-            str(n.get("site", "")),
-            str(n.get("floor", "")),
-            str(n.get("room", "")),
-            region,
-            k,
-            cycles,
-            float(n.get("poll_s", 1.0)),
-            segs,
-            str(store.get("path", "")),
-            alert_min,
-            float(alerts.get("cooldown_s", 3600.0)),
-            str(alerts.get("webhook_url", "")),
-            FleetConfig.from_dict(fleet, str(store.get("path", ""))),
-            antenna=str(n.get("antenna", "")),
-            rebaseline=rebaseline,
-            email=EmailConfig.from_dict(alerts["email"]) if "email" in alerts else None,
-            alert_max_attempts=_alert_max_attempts(alerts),
-            alert_max_age_s=_alert_max_age(alerts),
+    def from_dict(cls, d: Any) -> NodeConfig:
+        """Validate a parsed TOML document; ConfigError lists every problem."""
+        issues: list[ConfigIssue] = []
+        if not isinstance(d, dict):
+            raise ConfigError([ConfigIssue("", "config must be a TOML table")])
+        for k in d:
+            if k not in SECTIONS:
+                issues.append(unknown_key_issue(k, k, list(SECTIONS)))
+        n = check_section("node", d.get("node", {}), NODE_FIELDS, issues)
+        segs = cls._segments(d.get("segments", []), issues)
+        store = check_section("store", d.get("store", {}), STORE_FIELDS, issues)
+        raw_alerts = d.get("alerts", {})
+        alerts = check_section("alerts", raw_alerts, ALERT_FIELDS, issues, subtables=("email",))
+        fleet = FleetConfig._parse(d.get("fleet", {}), store.get("path", ""), issues)
+        rebaseline = _rebaseline_policy(
+            d.get("baseline", {}), alerts.get("min_score", 80.0), issues
         )
+        email = None
+        if isinstance(raw_alerts, dict) and "email" in raw_alerts:
+            email = EmailConfig._parse(raw_alerts["email"], issues)
+        _raise(issues)
+        return cls(
+            n["id"],
+            n["site"],
+            n["floor"],
+            n["room"],
+            n["region"],
+            n["threshold_k"],
+            n["baseline_cycles"],
+            n["poll_s"],
+            segs,
+            store["path"],
+            alerts["min_score"],
+            alerts["cooldown_s"],
+            alerts["webhook_url"],
+            fleet,
+            antenna=n["antenna"],
+            rebaseline=rebaseline,
+            email=email,
+            alert_max_attempts=alerts["max_attempts"],
+            alert_max_age_s=alerts["max_age_s"],
+        )
+
+    @staticmethod
+    def _segments(raw: Any, issues: list[ConfigIssue]) -> tuple[SegmentConfig, ...]:
+        if not isinstance(raw, list):
+            issues.append(
+                ConfigIssue("segments", "must be an array of tables ([[segments]] blocks)")
+            )
+            return ()
+        if not raw:
+            issues.append(
+                ConfigIssue("segments", "config needs at least one [[segments]] table")
+            )
+            return ()
+        segs = []
+        for i, s in enumerate(raw):
+            seg = SegmentConfig._parse(s, f"segments[{i}]", issues)
+            if seg is not None:
+                segs.append(seg)
+        seen: set[str] = set()
+        for i, s in enumerate(segs):
+            if s.name in seen:
+                issues.append(
+                    ConfigIssue(f"segments[{i}].name", f"segment names must be unique: {s.name!r}")
+                )
+            seen.add(s.name)
+        return tuple(segs)
 
     def to_dict(self):
         return {
@@ -323,36 +476,74 @@ class NodeConfig:
         }
 
 
-def _alert_max_attempts(alerts):
-    v = alerts.get("max_attempts", 5)
-    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-        raise ValueError(f"[alerts] max_attempts must be an integer >= 0 (0 = never), got {v!r}")
-    return v
-
-
-def _alert_max_age(alerts):
-    v = alerts.get("max_age_s", 7 * 86400.0)
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-        raise ValueError(f"[alerts] max_age_s must be a number >= 0 (0 = never), got {v!r}")
-    return float(v)
+def config_warnings(cfg: NodeConfig) -> list[str]:
+    """Valid but probably unintended settings, for --check-config and start-up."""
+    out = []
+    if urlsplit(cfg.webhook_url).scheme.lower() == "http":
+        out.append(
+            "alerts.webhook_url uses plain http://: alert contents and the HMAC-signed "
+            "body cross the network unencrypted and unauthenticated; use https:// "
+            "unless the receiver is on a trusted local network"
+        )
+    fc = cfg.fleet
+    if fc is not None and fc.auth == "legacy-token" and (
+        urlsplit(fc.base_url).scheme.lower() == "http"
+    ):
+        out.append(
+            "fleet.base_url uses plain http:// with auth = \"legacy-token\": the shared "
+            "QUIETROOM_CENTRAL_TOKEN crosses the network in clear; use https://"
+        )
+    late = [
+        f"{s.name!r} (interval_s = {s.interval_s:g})"
+        for s in cfg.segments
+        if s.enabled and s.interval_s < cfg.poll_s
+    ]
+    if late:
+        out.append(
+            f"node.poll_s = {cfg.poll_s:g} is longer than the interval of segment(s) "
+            f"{', '.join(late)}; they will run at most every {cfg.poll_s:g} s"
+        )
+    return out
 
 
 def load_config(path):
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-    return NodeConfig.from_dict(data)
+    """Read and validate a TOML config; ConfigError (a ValueError) names the file."""
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError([ConfigIssue("", f"not valid TOML: {e}")], str(path)) from None
+    try:
+        return NodeConfig.from_dict(data)
+    except ConfigError as e:
+        raise e.with_source(str(path)) from None
+
+
+def demo_document(node_id: str = "demo-node") -> dict[str, Any]:
+    """The --demo config as a TOML-shaped document (validated like any file)."""
+    return {
+        "node": {"id": node_id},
+        "segments": [
+            {
+                "name": "covert-uhf",
+                "start_hz": DEFAULT_START_HZ,
+                "stop_hz": DEFAULT_STOP_HZ,
+                "bin_hz": DEFAULT_BIN_HZ,
+                "interval_s": 60,
+                "priority": 10,
+            },
+            {
+                "name": "wifi24",
+                "mode": "overview",
+                "start": "2.4G",
+                "stop": "2.4835G",
+                "bin": "100k",
+                "interval_s": 300,
+                "priority": 5,
+            },
+        ],
+    }
 
 
 def default_config(node_id="demo-node"):
-    return NodeConfig(
-        node_id=node_id,
-        segments=(
-            SegmentConfig("covert-uhf", SweepPlan.search(), 60, 10),
-            SegmentConfig(
-                "wifi24",
-                SweepPlan.overview(parse_freq("2.4G"), parse_freq("2.4835G"), parse_freq("100k")),
-                300,
-                5,
-            ),
-        ),
-    )
+    return NodeConfig.from_dict(demo_document(node_id))

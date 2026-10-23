@@ -23,6 +23,23 @@ from pathlib import Path
 from typing import Any
 
 URN_UUID_PREFIX = "urn:uuid:"
+HEARTBEAT_PATH = "/api/v1/heartbeat"
+# Outbox bounds (defaults of the [fleet] outbox_* config keys).
+OUTBOX_MAX_ROWS = 20_000
+OUTBOX_MAX_AGE_S = 7 * 86400.0
+OUTBOX_MAX_ATTEMPTS = 5
+OUTBOX_BUSY_TIMEOUT_S = 30.0
+# Rows delivered per flush (per tick): a long backlog drains over several ticks
+# instead of holding one tick past the systemd watchdog.
+FLUSH_BATCH = 500
+_OUTBOX_COLUMNS = {
+    "created_at": "REAL",
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
+    "last_error": "TEXT NOT NULL DEFAULT ''",
+    "last_attempt_at": "REAL",
+    "parked_at": "REAL",
+    "park_reason": "TEXT",
+}
 DAY_S = 86400.0
 DEFAULT_CERT_WARN_DAYS = 30.0
 
@@ -192,6 +209,8 @@ def heartbeat_payload(ident, health, now=None):
         "alert_delivery_errors": health.get("alert_delivery_errors", {}),
         # fleet identity: client-certificate expiry
         "fleet_cert": health.get("fleet_cert"),
+        # fleet upload backlog: queued, set aside, deleted past the bound
+        "fleet_outbox": health.get("fleet_outbox", {}),
     }
 
 
@@ -208,7 +227,26 @@ def _post(
 
 
 class FleetClient:
-    """HTTPS push client with a SQLite store-and-forward outbox.
+    """HTTPS push client with a bounded SQLite store-and-forward outbox.
+
+    Undelivered uploads queue in order and are retried by :meth:`flush`. The
+    queue is bounded and sets aside what it cannot deliver, like the alert
+    outbox (``quietroom.alerts.Outbox``) rather than growing forever:
+
+    * queued heartbeats coalesce: central keeps only the latest per node, so
+      only the newest queued one is kept;
+    * ``max_rows``: past this many queued rows the oldest are *parked*
+      ("overflow"); past the same number of parked rows the oldest parked are
+      deleted and counted in :meth:`dropped`, so the file holds at most
+      ``2 * max_rows`` rows;
+    * ``max_age_s``: rows undelivered this long are parked ("stale"); 0 = never;
+    * ``max_attempts``: a row that failed this many flushes is a *suspect* and
+      stops holding the queue; it is parked as "poison" only if it fails again
+      in a flush where central accepted other rows. An outage (nothing gets
+      through) never parks anything, and costs one network attempt per flush.
+
+    Parked rows stay on disk for ``quietroom-node --outbox list|requeue
+    --channel fleet`` (see :func:`fleet_outbox_rows`, :func:`requeue_fleet_parked`).
 
     With ``ssl_context`` (see ``client_tls_context``) the node authenticates by
     client certificate and stamps ``node_uuid`` into every payload; central
@@ -227,6 +265,11 @@ class FleetClient:
         node_uuid: str | None = None,
         cert_not_after: float | None = None,
         cert_warn_s: float = DEFAULT_CERT_WARN_DAYS * DAY_S,
+        max_rows: int = OUTBOX_MAX_ROWS,
+        max_age_s: float = OUTBOX_MAX_AGE_S,
+        max_attempts: int = OUTBOX_MAX_ATTEMPTS,
+        clock: Callable[[], float] = time.time,
+        flush_batch: int = FLUSH_BATCH,
     ):
         self.base = base_url.rstrip("/")
         if ssl_context is not None and not self.base.lower().startswith("https://"):
@@ -238,13 +281,27 @@ class FleetClient:
         self.node_uuid = node_uuid
         self.cert_not_after = cert_not_after
         self.cert_warn_s = cert_warn_s
+        if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 1:
+            raise ValueError(f"fleet outbox max_rows must be an integer >= 1, got {max_rows!r}")
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 0:
+            raise ValueError(
+                f"fleet outbox max_attempts must be an integer >= 0, got {max_attempts!r}"
+            )
+        if isinstance(flush_batch, bool) or not isinstance(flush_batch, int) or flush_batch < 1:
+            raise ValueError(
+                f"fleet outbox flush_batch must be an integer >= 1, got {flush_batch!r}"
+            )
+        if not max_age_s >= 0:
+            raise ValueError(f"fleet outbox max_age_s must be >= 0, got {max_age_s!r}")
         self.sender: Sender = sender or functools.partial(_post, context=ssl_context)
-        self.db = sqlite3.connect(str(outbox_path))
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS fleet_outbox("
-            "id INTEGER PRIMARY KEY, path TEXT, payload TEXT)"
-        )
-        self.db.commit()
+        self.max_rows = max_rows
+        self.max_age_s = float(max_age_s)
+        self.max_attempts = max_attempts
+        self.clock = clock
+        self.flush_batch = flush_batch
+        # Rows set aside since the consumer (the service) last read and cleared this.
+        self.last_parked: list[dict[str, Any]] = []
+        self.db = _outbox_db(outbox_path, self.clock())
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -269,8 +326,50 @@ class FleetClient:
             return False
 
     def _enqueue(self, path: str, body: bytes) -> None:
-        self.db.execute("INSERT INTO fleet_outbox(path,payload) VALUES(?,?)", (path, body.decode()))
+        now = self.clock()
+        if path == HEARTBEAT_PATH:
+            # Central overwrites a node's record with each heartbeat: an older
+            # queued one carries nothing the newer one does not.
+            self.db.execute(
+                "DELETE FROM fleet_outbox WHERE path=? AND parked_at IS NULL", (HEARTBEAT_PATH,)
+            )
+        self.db.execute(
+            "INSERT INTO fleet_outbox(path,payload,created_at) VALUES(?,?,?)",
+            (path, body.decode(), now),
+        )
+        self._bound(now)
         self.db.commit()
+
+    def _bound(self, now: float) -> None:
+        """Hold the queue to max_rows live rows plus max_rows parked ones."""
+        over = self.pending() - self.max_rows
+        if over > 0:
+            rows = self.db.execute(
+                "SELECT id,path FROM fleet_outbox WHERE parked_at IS NULL ORDER BY id LIMIT ?",
+                (over,),
+            ).fetchall()
+            reason = f"overflow: more than {self.max_rows} undelivered rows (outbox_max_rows)"
+            for row_id, path in rows:
+                self._park(row_id, path, reason, now)
+        extra = self.parked() - self.max_rows
+        if extra > 0:
+            self.db.execute(
+                "DELETE FROM fleet_outbox WHERE id IN (SELECT id FROM fleet_outbox "
+                "WHERE parked_at IS NOT NULL ORDER BY id LIMIT ?)",
+                (extra,),
+            )
+            self.db.execute(
+                "INSERT INTO fleet_outbox_meta(key,value) VALUES('dropped',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=value+excluded.value",
+                (extra,),
+            )
+
+    def _park(self, row_id: int, path: str, reason: str, now: float) -> None:
+        self.db.execute(
+            "UPDATE fleet_outbox SET parked_at=?, park_reason=? WHERE id=?", (now, reason, row_id)
+        )
+        self.last_parked.append({"id": row_id, "path": path, "reason": reason})
+        del self.last_parked[:-100]
 
     @property
     def auth_mode(self) -> str:
@@ -285,27 +384,197 @@ class FleetClient:
         return cert_expiry(self.cert_not_after, now, self.cert_warn_s)
 
     def send_heartbeat(self, payload):
-        return self._send("/api/v1/heartbeat", payload)
+        return self._send(HEARTBEAT_PATH, payload)
 
     def send_events(self, node_id, events):
         return self._send("/api/v1/events", {"node_id": node_id, "events": events})
 
-    def pending(self):
-        return self.db.execute("SELECT COUNT(*) FROM fleet_outbox").fetchone()[0]
+    def pending(self) -> int:
+        """Rows still being delivered (not parked)."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM fleet_outbox WHERE parked_at IS NULL"
+        ).fetchone()[0]
 
-    def flush(self):
+    def parked(self) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM fleet_outbox WHERE parked_at IS NOT NULL"
+        ).fetchone()[0]
+
+    def dropped(self) -> int:
+        """Parked rows deleted to respect max_rows, ever (persisted)."""
+        row = self.db.execute("SELECT value FROM fleet_outbox_meta WHERE key='dropped'").fetchone()
+        return int(row[0]) if row else 0
+
+    def outbox_status(self) -> dict[str, int]:
+        return {"pending": self.pending(), "parked": self.parked(), "dropped": self.dropped()}
+
+    def flush(self) -> int:
+        """Deliver queued rows in order; returns how many went out.
+
+        Stops at the first failing row (central down: one attempt per flush),
+        except that suspects (>= max_attempts failures) are skipped so one bad
+        payload cannot hold the queue. Suspects are retried after the others only
+        while the previous attempt succeeded, and parked as poison if they fail
+        then. At most ``flush_batch`` rows go out per call.
+        """
+        now = self.clock()
+        if self.max_age_s > 0:
+            stale = self.db.execute(
+                "SELECT id,path FROM fleet_outbox WHERE parked_at IS NULL AND created_at < ?",
+                (now - self.max_age_s,),
+            ).fetchall()
+            reason = f"stale: undelivered for more than {self.max_age_s:g} s (outbox_max_age_s)"
+            for row_id, path in stale:
+                self._park(row_id, path, reason, now)
+            self.db.commit()
+        rows = self.db.execute(
+            "SELECT id,path,payload,attempts FROM fleet_outbox WHERE parked_at IS NULL "
+            "ORDER BY id"
+        ).fetchall()
         sent = 0
-        for row_id, path, payload in self.db.execute(
-            "SELECT id,path,payload FROM fleet_outbox ORDER BY id"
-        ).fetchall():
-            try:
-                self._send_direct(path, payload)
-            except Exception:
-                break  # central unreachable/refusing: keep order, retry next flush
-            self.db.execute("DELETE FROM fleet_outbox WHERE id=?", (row_id,))
+        tried = False
+        last_ok = False  # did the most recent attempt in this flush succeed?
+        suspects = []
+        for row in rows:
+            if sent >= self.flush_batch:
+                return sent
+            if self.max_attempts and row[3] >= self.max_attempts:
+                suspects.append(row)
+                continue
+            tried = True
+            last_ok = self._attempt(row, now)
+            if not last_ok:
+                break
             sent += 1
-        self.db.commit()
+        if not tried and suspects:
+            # Everything left is a suspect: probe with the oldest so a recovered
+            # central drains the queue (and a dead one still costs one attempt).
+            last_ok = self._attempt(suspects.pop(0), now)
+            sent += last_ok
+        # A suspect is retried only while central is demonstrably up (the attempt
+        # just before succeeded); failing then means the payload is the problem.
+        # Central going down mid-flush therefore parks nothing.
+        for row in suspects:
+            if not last_ok or sent >= self.flush_batch:
+                break
+            if self._attempt(row, now):
+                sent += 1
+                continue
+            self._park(
+                row[0], row[1],
+                f"poison: failed {row[3] + 1} times while central accepted other rows",
+                now,
+            )
+            self.db.commit()
+            last_ok = False  # one park per proof: the next suspect needs a fresh success
         return sent
+
+    def _attempt(self, row: tuple, now: float) -> bool:
+        row_id, path, payload, _ = row
+        try:
+            self._send_direct(path, payload)
+        except Exception as e:  # central unreachable/refusing: keep the row
+            self.db.execute(
+                "UPDATE fleet_outbox SET attempts=attempts+1, last_attempt_at=?, last_error=? "
+                "WHERE id=?",
+                (now, f"{type(e).__name__}: {e}"[:500], row_id),
+            )
+            self.db.commit()
+            return False
+        self.db.execute("DELETE FROM fleet_outbox WHERE id=?", (row_id,))
+        self.db.commit()
+        return True
 
     def _send_direct(self, path, payload):
         self.sender(f"{self.base}{path}", payload.encode(), self._headers())
+
+
+def _outbox_db(path: str | os.PathLike[str], now: float) -> sqlite3.Connection:
+    """Open (creating or upgrading in place) a fleet outbox file.
+
+    Safe beside a running node: schema work happens inside BEGIN IMMEDIATE
+    with a busy timeout, and a column added concurrently is not an error.
+    """
+    db = sqlite3.connect(str(path), timeout=OUTBOX_BUSY_TIMEOUT_S)
+    try:
+        db.execute(f"PRAGMA busy_timeout={int(OUTBOX_BUSY_TIMEOUT_S * 1000)}")
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS fleet_outbox("
+            "id INTEGER PRIMARY KEY, path TEXT, payload TEXT)"
+        )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS fleet_outbox_meta(key TEXT PRIMARY KEY, value INTEGER)"
+        )
+        have = {r[1] for r in db.execute("PRAGMA table_info(fleet_outbox)")}
+        for col, decl in _OUTBOX_COLUMNS.items():
+            if col not in have:
+                try:
+                    db.execute(f"ALTER TABLE fleet_outbox ADD COLUMN {col} {decl}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
+        # Rows queued before the upgrade start their age clock now.
+        db.execute("UPDATE fleet_outbox SET created_at=? WHERE created_at IS NULL", (now,))
+        db.commit()
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
+def fleet_outbox_rows(path, *, parked=None):
+    """Rows of a fleet outbox file (``quietroom-node --outbox list --channel fleet``).
+
+    parked: None = all, True = parked only, False = still queued.
+    """
+    db = _outbox_db(path, time.time())
+    q = (
+        "SELECT id,path,attempts,created_at,last_attempt_at,last_error,parked_at,park_reason,"
+        "payload FROM fleet_outbox"
+    )
+    if parked is not None:
+        q += " WHERE parked_at IS NOT NULL" if parked else " WHERE parked_at IS NULL"
+    out = []
+    try:
+        for r in db.execute(q + " ORDER BY id"):
+            try:
+                payload = json.loads(r[8])
+            except (TypeError, ValueError):
+                payload = r[8]
+            out.append(
+                {
+                    "id": r[0], "channel": "fleet", "path": r[1], "attempts": r[2],
+                    "created_at": r[3], "last_attempt_at": r[4], "last_error": r[5] or "",
+                    "parked_at": r[6], "park_reason": r[7], "payload": payload,
+                }
+            )
+    finally:
+        db.close()
+    return out
+
+
+def requeue_fleet_parked(path, *, ids=None, now=None):
+    """Put parked fleet rows back in the queue with a fresh attempt budget and age.
+
+    They keep their id, so they go out in their original order. Returns the
+    ids requeued (unknown or not-parked ids are skipped). Requeued rows count
+    toward max_rows again on the next enqueue.
+    """
+    now = time.time() if now is None else now
+    db = _outbox_db(path, now)
+    try:
+        q, args = "SELECT id FROM fleet_outbox WHERE parked_at IS NOT NULL", []
+        if ids is not None:
+            q += f" AND id IN ({','.join('?' * len(ids))})" if ids else " AND 0"
+            args += list(ids)
+        got = [r[0] for r in db.execute(q + " ORDER BY id", args)]
+        db.executemany(
+            "UPDATE fleet_outbox SET parked_at=NULL, park_reason=NULL, attempts=0,"
+            " created_at=? WHERE id=?",
+            [(now, i) for i in got],
+        )
+        db.commit()
+    finally:
+        db.close()
+    return got

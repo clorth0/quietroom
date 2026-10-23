@@ -1,4 +1,7 @@
 # Copy to /etc/quietroom/config.toml and edit. Frequencies: Hz ints or "300M"/"2.4G"/"100k".
+# Loading is strict: an unknown key, a wrong type or an out-of-range value stops the
+# node at start-up with every problem listed. Check edits with:
+#   quietroom-node --config /etc/quietroom/config.toml --check-config
 [node]
 id = "floor3-east"
 site = "hq"
@@ -90,3 +93,12 @@ heartbeat_s = 60
 # ca_file = "/etc/quietroom/fleet/central-ca.crt"   # pins central's server CA
 # identity_path = "/var/lib/quietroom/identity.json"  # default: next to [store] path
 # cert_warn_days = 30     # warn in health/heartbeat this long before node.crt expires
+# Local queue of uploads central has not accepted yet (heartbeats coalesce to the newest).
+# Bounded so a node cut off from central cannot fill its disk: past outbox_max_rows the
+# oldest rows are parked, and past that many parked rows the oldest parked are deleted
+# (counted in health as fleet_outbox.dropped). Parked rows:
+#   quietroom-node --outbox list --channel fleet --parked
+#   quietroom-node --outbox requeue --channel fleet --id N
+# outbox_max_rows = 20000   # >= 1; this bound cannot be disabled
+# outbox_max_age_s = 604800 # park uploads undelivered this long (7 days); 0 = never
+# outbox_max_attempts = 5   # failures before a row stops blocking the queue; 0 = never
