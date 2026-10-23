@@ -3,9 +3,10 @@
 from __future__ import annotations
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from quietroom.bands import REGIONS
 from quietroom.engine.plan import SweepPlan
+from quietroom.node.rebaseline import RebaselinePolicy
 
 _FREQ_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmg]?)(?:hz)?\s*$", re.I)
 _SCALE = {"": 1, "k": 1e3, "m": 1e6, "g": 1e9}
@@ -48,6 +49,33 @@ class SegmentConfig:
         )
 
 
+_BASELINE_KEYS = {
+    "max_age_s",
+    "drift_window",
+    "drift_mean_db",
+    "drift_changed_fraction",
+    "freeze_score",
+    "incident_hold_s",
+    "invalidate_on_fingerprint",
+}
+
+
+def _rebaseline_policy(b, alert_min_score):
+    unknown = set(b) - _BASELINE_KEYS
+    if unknown:
+        raise ValueError(f"unknown [baseline] keys: {', '.join(sorted(unknown))}")
+    max_age = b.get("max_age_s")
+    return RebaselinePolicy(
+        max_age_s=None if max_age in (None, 0) else float(max_age),
+        drift_window=int(b.get("drift_window", 0)),
+        drift_mean_db=float(b.get("drift_mean_db", 3.0)),
+        drift_changed_fraction=float(b.get("drift_changed_fraction", 0.10)),
+        freeze_score=float(b.get("freeze_score", alert_min_score)),
+        incident_hold_s=float(b.get("incident_hold_s", 3600.0)),
+        invalidate_on_fingerprint=bool(b.get("invalidate_on_fingerprint", True)),
+    )
+
+
 @dataclass(frozen=True)
 class NodeConfig:
     node_id: str = "quietroom-node"
@@ -65,6 +93,10 @@ class NodeConfig:
     webhook_url: str = ""
     fleet_base_url: str = ""
     fleet_heartbeat_s: float = 60.0
+    # Free-text antenna label; part of the baseline fingerprint, so swapping
+    # the antenna (and saying so here) invalidates the stored baseline.
+    antenna: str = ""
+    rebaseline: RebaselinePolicy = field(default_factory=RebaselinePolicy)
 
     @classmethod
     def from_dict(cls, d):
@@ -87,6 +119,8 @@ class NodeConfig:
         store = d.get("store", {})
         alerts = d.get("alerts", {})
         fleet = d.get("fleet", {})
+        alert_min = float(alerts.get("min_score", 80.0))
+        rebaseline = _rebaseline_policy(d.get("baseline", {}), alert_min)
         return cls(
             str(n.get("id", "quietroom-node")),
             str(n.get("site", "")),
@@ -98,11 +132,13 @@ class NodeConfig:
             float(n.get("poll_s", 1.0)),
             segs,
             str(store.get("path", "")),
-            float(alerts.get("min_score", 80.0)),
+            alert_min,
             float(alerts.get("cooldown_s", 3600.0)),
             str(alerts.get("webhook_url", "")),
             str(fleet.get("base_url", "")),
             float(fleet.get("heartbeat_s", 60.0)),
+            antenna=str(n.get("antenna", "")),
+            rebaseline=rebaseline,
         )
 
     def to_dict(self):

@@ -10,6 +10,8 @@ import io
 import json
 import sqlite3
 import time
+from dataclasses import dataclass, field
+from typing import Any
 import numpy as np
 from quietroom.engine.spectrum import Baseline
 
@@ -27,6 +29,27 @@ CREATE TABLE IF NOT EXISTS findings(
 CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id,timestamp);
 CREATE INDEX IF NOT EXISTS idx_sweeps_node ON sweeps(node_id,timestamp);
 """
+
+# Columns added after the first schema shipped; applied with ALTER TABLE so an
+# existing node database upgrades in place. Pre-policy rows read back with an
+# empty fingerprint, which the re-baseline policy treats as "unknown front end".
+_BASELINE_COLUMNS = {
+    "reason": "TEXT DEFAULT ''",
+    "fingerprint": "TEXT DEFAULT ''",
+    "captured_at": "REAL",
+    "detail": "TEXT DEFAULT '{}'",
+}
+
+
+@dataclass(frozen=True)
+class BaselineMeta:
+    """Why, when and under which front end a baseline version was captured."""
+
+    version: int
+    captured_at: float
+    reason: str
+    fingerprint: str
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 def _blob(ps):
@@ -46,6 +69,10 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(baselines)")}
+        for col, decl in _BASELINE_COLUMNS.items():
+            if col not in have:
+                self.db.execute(f"ALTER TABLE baselines ADD COLUMN {col} {decl}")
         self.db.commit()
 
     def close(self):
@@ -60,7 +87,18 @@ class Store:
         )
         self.db.commit()
 
-    def save_baseline(self, node_id, segment, baseline):
+    def save_baseline(
+        self,
+        node_id,
+        segment,
+        baseline,
+        *,
+        reason="",
+        fingerprint="",
+        captured_at=None,
+        detail=None,
+    ):
+        """Append a new baseline version; never overwrites an older one."""
         row = self.db.execute(
             "SELECT COALESCE(MAX(version),0)+1 v FROM baselines WHERE node_id=? AND segment=?",
             (node_id, segment),
@@ -72,9 +110,20 @@ class Store:
             buf, freqs=baseline.freqs_hz, power=baseline.mean_dbm, std=baseline.std_dbm
         )
         self.db.execute(
-            "INSERT INTO baselines "
-            "(node_id,segment,version,created_at,sweep_count,blob) VALUES(?,?,?,?,?,?)",
-            (node_id, segment, v, baseline.created_at, baseline.sweep_count, buf.getvalue()),
+            "INSERT INTO baselines (node_id,segment,version,created_at,sweep_count,blob,"
+            "reason,fingerprint,captured_at,detail) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                node_id,
+                segment,
+                v,
+                baseline.created_at,
+                baseline.sweep_count,
+                buf.getvalue(),
+                str(reason),
+                fingerprint,
+                time.time() if captured_at is None else captured_at,
+                json.dumps(detail or {}, sort_keys=True, default=str),
+            ),
         )
         self.db.commit()
         return v
@@ -92,6 +141,35 @@ class Store:
         d = np.load(io.BytesIO(r["blob"]))
         return Baseline(d["freqs"], d["power"], d["std"], r["sweep_count"], r["created_at"])
 
+    def baseline_meta(self, node_id, segment, version=None):
+        """Why/when/under which front end a baseline version was captured."""
+        q = (
+            "SELECT version,created_at,captured_at,reason,fingerprint,detail FROM baselines"
+            " WHERE node_id=? AND segment=?"
+            + ("" if version is None else " AND version=?")
+            + " ORDER BY version DESC LIMIT 1"
+        )
+        args = (node_id, segment) if version is None else (node_id, segment, version)
+        r = self.db.execute(q, args).fetchone()
+        if r is None:
+            return None
+        captured = r["captured_at"] if r["captured_at"] is not None else r["created_at"]
+        return BaselineMeta(
+            version=int(r["version"]),
+            captured_at=float(captured),
+            reason=r["reason"] or "",
+            fingerprint=r["fingerprint"] or "",
+            detail=json.loads(r["detail"] or "{}"),
+        )
+
+    def last_incident_at(self, node_id, segment, min_score):
+        """Timestamp of the newest finding scoring >= min_score, or None."""
+        r = self.db.execute(
+            "SELECT MAX(timestamp) t FROM findings WHERE node_id=? AND segment=? AND score>=?",
+            (node_id, segment, min_score),
+        ).fetchone()
+        return None if r["t"] is None else float(r["t"])
+
     def baseline_versions(self, node_id, segment):
         return [
             r["version"]
@@ -101,10 +179,12 @@ class Store:
             )
         ]
 
-    def record_sweep(self, node_id, segment, spectrum, findings=()):
+    def record_sweep(self, node_id, segment, spectrum, findings=(), timestamp=None):
+        """timestamp: wall-clock time of the sweep (defaults to spectrum.timestamp)."""
+        ts = spectrum.timestamp if timestamp is None else timestamp
         self.db.execute(
             "INSERT INTO sweeps(node_id,segment,timestamp,blob) VALUES(?,?,?,?)",
-            (node_id, segment, spectrum.timestamp, _blob(spectrum)),
+            (node_id, segment, ts, _blob(spectrum)),
         )
         for f in findings:
             self.db.execute(
@@ -114,7 +194,7 @@ class Store:
                 (
                     node_id,
                     segment,
-                    spectrum.timestamp,
+                    ts,
                     f.get("freq_hz"),
                     f.get("score"),
                     f.get("raw_score"),

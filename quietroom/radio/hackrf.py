@@ -151,6 +151,9 @@ class HackRFDevice(Device):
     def probe(self) -> DeviceInfo | None:
         return probe_hackrf()
 
+    def frontend_settings(self) -> dict[str, object]:
+        return {"lna_gain": self.lna_gain, "vga_gain": self.vga_gain, "amp": self.amp}
+
     def capabilities(self):
         from quietroom.radio.capabilities import RadioCapabilities
         return RadioCapabilities("HackRF One", MIN_HZ, MAX_HZ, 20_000_000,

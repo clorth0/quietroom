@@ -8,6 +8,7 @@ region = "us"
 threshold_k = 4.0
 baseline_cycles = 5
 poll_s = 1.0
+antenna = "ANT500"        # label only; changing it invalidates stored baselines
 
 [[segments]]
 name = "covert-uhf"
@@ -34,6 +35,20 @@ stop = "6G"
 bin = "1M"
 interval_s = 3600
 priority = 1
+
+# Re-baseline policy. Learning is frozen while a segment has an alert-grade
+# finding (score >= freeze_score) within incident_hold_s; a recapture whose own
+# sweeps show an alert-grade emitter is discarded. Each new baseline is a new
+# Store version recording why it was captured. Omit the section to reuse the
+# stored baseline indefinitely (only front-end changes trigger a recapture).
+[baseline]
+max_age_s = 604800        # 7 days; 0 = never age out
+drift_window = 10         # quiet live sweeps per drift check; 0 = off
+drift_mean_db = 3.0       # recapture if mean |delta| >= this ...
+drift_changed_fraction = 0.10  # ... or this fraction of bins moved > 6 dB
+incident_hold_s = 3600    # keep learning frozen this long after the last hit
+# freeze_score = 80       # defaults to [alerts].min_score
+invalidate_on_fingerprint = true  # plan / gains / radio serial / antenna changed
 
 [store]
 path = "/var/lib/quietroom/quietroom.db"

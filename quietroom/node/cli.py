@@ -7,11 +7,14 @@ from quietroom.config import default_config, load_config
 from quietroom.node.service import MonitorService
 
 
-def _device(demo):
+def _device(demo, cfg=None):
     if demo:
         from quietroom.radio.recorded import streaming_demo_device
 
-        return streaming_demo_device()
+        # Keep every baseline capture clean: the default 3 clean sweeps was
+        # shorter than baseline_cycles (5), so the demo learned its own bug.
+        n = cfg.baseline_cycles * sum(s.enabled for s in cfg.segments) if cfg else 3
+        return streaming_demo_device(n_clean=n)
     from quietroom.radio.hackrf import HackRFDevice
 
     return HackRFDevice()
@@ -67,7 +70,7 @@ def main(argv=None):
 
     svc = MonitorService(
         cfg,
-        _device(a.demo),
+        _device(a.demo, cfg),
         sink=events.append,
         store=store,
         alert_engine=alert_engine,
