@@ -475,8 +475,19 @@ def main(argv=None):
             print(json.dumps(e))
         print(json.dumps({"health": svc.health(), "tick": r.__dict__}, default=str))
         return 0
-    print(f"quietroom-node {cfg.node_id} starting ({len(cfg.segments)} segments)")
-    svc.run()
+    from quietroom.node.stopping import Stopper
+
+    print(f"quietroom-node {cfg.node_id} starting ({len(cfg.segments)} segments)", flush=True)
+    stopper = Stopper()
+    stopper.install()  # SIGTERM/SIGINT: finish the sweep in flight, flush, close, exit 0
+    try:
+        svc.run(stop_event=stopper)
+    finally:
+        stopper.restore()
+        stopper.close()
+    print(
+        f"quietroom-node: {stopper.signame} received; stopped cleanly", file=sys.stderr, flush=True
+    )
     return 0
 
 

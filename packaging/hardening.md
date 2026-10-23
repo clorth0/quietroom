@@ -63,8 +63,10 @@ sudo -u quietroom sh -c 'set -a; . /etc/quietroom/secrets.env; exec \
 ```
 
 On central, `quietroom-central --cert ... --key ... --client-ca ...
-[--allow-legacy-token] --check-config` does the same for
-`QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN` and the TLS files.
+[--allow-legacy-token] [--deny-list FILE] [--cert-warn-days N] --check-config`
+does the same for `QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN`, the
+TLS files, the deny list (exists, is UTF-8, every line a UUID; reports the count)
+and `--cert-warn-days` (an integer from 1 to 365).
 
 ## Undeliverable alerts (dead letters)
 
@@ -89,6 +91,10 @@ quietroom-node --config /etc/quietroom/config.toml --outbox requeue --all --chan
 
 A requeued alert keeps its place in line with a fresh attempt budget and age;
 the running node sends it on its next tick.
+
+At most 500 alert sends are attempted per channel per tick (`ALERT_FLUSH_BATCH`,
+mirroring the fleet outbox), so a long backlog drains over several ticks
+instead of holding one tick past the watchdog.
 
 ## Fleet upload backlog
 
@@ -119,3 +125,26 @@ parking is printed to the journal and emitted locally as a `fleet_parked` event.
 quietroom-node --config /etc/quietroom/config.toml --outbox list --channel fleet --parked
 quietroom-node --config /etc/quietroom/config.toml --outbox requeue --channel fleet --all
 ```
+
+## Stopping the daemon
+
+`SIGTERM` (`systemctl stop`) and `SIGINT` stop the node cleanly. The current
+sweep finishes the segment in progress; segments not yet started are abandoned
+(they run on the next start). The node sends `STOPPING=1` to systemd, makes one
+last flush of the alert and fleet outboxes (anything undelivered stays queued on
+disk), closes the outboxes, store and SDR, and exits 0. A clean stop leaves no
+`node.db-wal`/`-shm` behind. A flush to an unreachable sink can cost one network
+timeout per sink, so the unit sets `TimeoutStopSec=60`. A second signal during
+shutdown kills the process with the default action.
+
+## SQLite databases
+
+The store, the alert outbox and the fleet outbox all open through
+`quietroom/sqlitedb.py` (`open_db` + a declarative `Schema`). It sets a busy
+timeout, switches the store to WAL with a retry on lock contention, and creates
+and upgrades the schema inside `BEGIN IMMEDIATE`, so two processes opening an old
+file at once (the daemon and `--outbox`/`--check-config`) serialise instead of
+racing; a column another process already added is treated as done. A test
+(`tests/test_sqlite_discipline.py`) fails if any other module runs DDL
+(`ALTER/CREATE/DROP`, `PRAGMA journal_mode`), `executescript` or
+`sqlite3.connect`.

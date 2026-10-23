@@ -14,6 +14,10 @@ RestartSec=10
 # cannot fix it. Fix the file (check with --check-config), then start again.
 RestartPreventExitStatus=2
 WatchdogSec=120
+# On stop (SIGTERM) the node finishes the sweep in flight, flushes the alert and
+# fleet outboxes once (a dead relay or central costs one timeout each) and
+# closes its databases; past this, systemd kills it.
+TimeoutStopSec=60
 NotifyAccess=main
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -10,11 +10,12 @@ import hashlib
 import hmac
 import json
 import smtplib
-import sqlite3
 import time
 import urllib.request
 from dataclasses import dataclass
 from email.message import EmailMessage
+
+from quietroom.sqlitedb import Schema, open_db
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,20 @@ _OUTBOX_COLUMNS = {
 
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_MAX_AGE_S = 7 * 86400.0
+# Delivery attempts per flush (per tick, per channel), like the fleet outbox's
+# FLUSH_BATCH: a long backlog drains over several ticks instead of holding one
+# tick past the systemd watchdog.
+ALERT_FLUSH_BATCH = 500
+
+ALERT_OUTBOX_SCHEMA = Schema(
+    "alert outbox",
+    statements=(
+        "CREATE TABLE IF NOT EXISTS outbox("
+        "id INTEGER PRIMARY KEY, payload TEXT, attempts INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS outbox_channels(channel TEXT PRIMARY KEY, last_ok_at REAL)",
+    ),
+    columns={"outbox": _OUTBOX_COLUMNS},
+)
 
 
 class Outbox:
@@ -245,16 +260,24 @@ class Outbox:
         clock=None,
         max_attempts=DEFAULT_MAX_ATTEMPTS,
         max_age_s=DEFAULT_MAX_AGE_S,
+        flush_batch=ALERT_FLUSH_BATCH,
     ):
-        self.db = _outbox_db(path)
+        if isinstance(flush_batch, bool) or not isinstance(flush_batch, int) or flush_batch < 1:
+            raise ValueError(
+                f"alert outbox flush_batch must be an integer >= 1, got {flush_batch!r}"
+            )
+        self.flush_batch = flush_batch
+        self.clock = clock or time.time
+        self.db = _outbox_db(path, self.clock())
         self.channel = channel
         self.backoff_s = float(backoff_s)
         self.max_backoff_s = float(max_backoff_s)
-        self.clock = clock or time.time
         self.max_attempts = int(max_attempts)
         self.max_age_s = float(max_age_s)
         self.last_parked: list[dict] = []
-        _migrate_outbox(self.db, self.clock())
+
+    def close(self):
+        self.db.close()
 
     def add(self, payload):
         self.db.execute(
@@ -338,7 +361,7 @@ class Outbox:
             " WHERE channel=? AND parked_at IS NULL ORDER BY id",
             (self.channel,),
         ).fetchall()
-        delivered, failed = 0, False
+        delivered, failed, tried = 0, False, 0
         suspects = [r for r in rows if self._suspect(r[2])]
         # FIFO with head-of-line backoff: if the oldest alert is still backing
         # off, the channel is backing off (it is the relay that is down, not
@@ -349,6 +372,9 @@ class Outbox:
                 continue
             if row[3] > now:
                 break
+            if tried >= self.flush_batch:
+                break
+            tried += 1
             if self._attempt(send, row, now):
                 delivered += 1
                 continue
@@ -361,6 +387,9 @@ class Outbox:
             for row in suspects:
                 if row[3] > now:
                     continue
+                if tried >= self.flush_batch:
+                    break
+                tried += 1
                 if self._attempt(send, row, now):
                     delivered += 1
                     continue
@@ -370,26 +399,14 @@ class Outbox:
         return delivered
 
 
-def _outbox_db(path):
-    db = sqlite3.connect(str(path), timeout=10)
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS outbox("
-        "id INTEGER PRIMARY KEY, payload TEXT, attempts INTEGER DEFAULT 0)"
-    )
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS outbox_channels(channel TEXT PRIMARY KEY, last_ok_at REAL)"
-    )
-    return db
+def _outbox_db(path, now):
+    """Open (creating or upgrading in place) an alert outbox file."""
 
+    def backfill(db):
+        # rows queued before ages were tracked count from the upgrade, not from 1970
+        db.execute("UPDATE outbox SET created_at=? WHERE created_at IS NULL", (now,))
 
-def _migrate_outbox(db, now):
-    have = {r[1] for r in db.execute("PRAGMA table_info(outbox)")}
-    for col, decl in _OUTBOX_COLUMNS.items():
-        if col not in have:
-            db.execute(f"ALTER TABLE outbox ADD COLUMN {col} {decl}")
-    # rows queued before ages were tracked count from the upgrade, not from 1970
-    db.execute("UPDATE outbox SET created_at=? WHERE created_at IS NULL", (now,))
-    db.commit()
+    return open_db(path, ALERT_OUTBOX_SCHEMA, upgrade=backfill)
 
 
 def _summary(p):
@@ -408,8 +425,7 @@ def outbox_rows(path, *, channel=None, parked=None):
 
     parked: None = all, True = parked only, False = still being delivered.
     """
-    db = _outbox_db(path)
-    _migrate_outbox(db, time.time())
+    db = _outbox_db(path, time.time())
     q = (
         "SELECT id,channel,attempts,created_at,last_attempt_at,next_attempt_at,last_error,"
         "parked_at,park_reason,payload FROM outbox WHERE 1=1"
@@ -445,8 +461,7 @@ def requeue_parked(path, *, ids=None, channel=None, now=None):
     ids requeued (ids that are unknown or not parked are skipped).
     """
     now = time.time() if now is None else now
-    db = _outbox_db(path)
-    _migrate_outbox(db, now)
+    db = _outbox_db(path, now)
     q, args = "SELECT id FROM outbox WHERE parked_at IS NOT NULL", []
     if channel is not None:
         q += " AND channel=?"
@@ -479,6 +494,9 @@ class QueuedChannel:
 
     def flush(self):
         return self.outbox.flush(self.send)
+
+    def close(self):
+        self.outbox.close()
 
     def pending(self):
         return self.outbox.pending()

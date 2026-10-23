@@ -30,8 +30,15 @@ class Report:
             (self.errors if required else self.warnings).append(missing)
         return ok
 
-    def check(self, name: str, ok: bool, problem: str = "") -> bool:
-        self.checks.append({"check": name, "ok": ok, **({"problem": problem} if problem else {})})
+    def check(self, name: str, ok: bool, problem: str = "", *, detail: str = "") -> bool:
+        self.checks.append(
+            {
+                "check": name,
+                "ok": ok,
+                **({"problem": problem} if problem else {}),
+                **({"detail": detail} if detail else {}),
+            }
+        )
         if not ok:
             self.errors.append(problem or name)
         return ok

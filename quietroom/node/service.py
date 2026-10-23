@@ -46,6 +46,8 @@ class TickResult:
     segments_run: list = field(default_factory=list)
     findings: int = 0
     errors: list = field(default_factory=list)
+    # due segments skipped because a stop was requested during this tick
+    abandoned: list = field(default_factory=list)
 
 
 class MonitorService:
@@ -94,6 +96,9 @@ class MonitorService:
         self.anchors: dict[str, dict[str, Any]] = {}
         self.anchor_status: dict[str, dict[str, Any]] = {}
         self._refusal: str | None = None
+        # Set by run(); anything with is_set() (quietroom.node.stopping.Stopper,
+        # threading.Event). tick() stops starting new segments once it is set.
+        self.stop_event: Any = None
 
     def start(self):
         info = self.device.probe()
@@ -426,6 +431,10 @@ class MonitorService:
             self.last_error = f"control requests: {e}"
             result.errors.append(self.last_error)
         for seg in self.scheduler.due(now, self.last_run):
+            if self.stop_event is not None and self.stop_event.is_set():
+                # Stopping: the sweep in flight (if any) finished; start no more.
+                result.abandoned.append(seg.name)
+                continue
             try:
                 spectrum = next(iter(self.device.sweep(seg.plan, cycles=1)))
                 base = self.baselines.get(seg.name)
@@ -715,6 +724,14 @@ class MonitorService:
         }
 
     def run(self, stop_event=None, max_ticks=None):
+        """Tick every poll_s until ``stop_event`` is set (or ``max_ticks`` ticks).
+
+        A stop requested through ``stop_event`` (the daemon passes a
+        ``Stopper`` wired to SIGTERM/SIGINT) ends with :meth:`shutdown`.
+        Reaching ``max_ticks`` does not: the caller keeps its resources open.
+        An exception propagates without a shutdown (systemd restarts the unit).
+        """
+        self.stop_event = stop_event
         self.start()
         if self.notifier is not None:
             self.notifier.ready()
@@ -732,7 +749,39 @@ class MonitorService:
                 time.sleep(self.config.poll_s)  # the daemon: never spin between ticks
             elif ticks < max_ticks:
                 time.sleep(min(self.config.poll_s, 0.05))
+        if stop_event is not None and stop_event.is_set():
+            restore = getattr(stop_event, "restore", None)
+            if restore is not None:
+                restore()  # a second signal during shutdown stops at once
+            self.shutdown(getattr(stop_event, "signame", None) or "stop requested")
         return ticks
+
+    def shutdown(self, reason: str = "stop requested") -> None:
+        """Stop cleanly: tell systemd, deliver what is queued once more, close files.
+
+        Each step is best effort and independent: an outbox that cannot flush
+        does not keep the store from being closed.
+        """
+        if self.notifier is not None:
+            self.notifier.stopping()
+            self.notifier.status(f"stopping ({reason})")
+        try:
+            self.flush_alerts()  # records per-channel failures itself
+        except Exception as e:  # noqa: BLE001 - shutdown goes on regardless
+            self.last_error = f"shutdown alert flush: {e}"
+        if self.fleet is not None:
+            try:
+                self.fleet.flush()
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"shutdown fleet flush: {e}"
+        for thing in [*self.notifiers, self.fleet, self.store, self.device]:
+            close = getattr(thing, "close", None) if thing is not None else None
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"shutdown close: {e}"
 
 
 def _utc(ts: float) -> str:

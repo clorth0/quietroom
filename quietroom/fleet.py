@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from quietroom.sqlitedb import Schema, open_db
+
 URN_UUID_PREFIX = "urn:uuid:"
 HEARTBEAT_PATH = "/api/v1/heartbeat"
 # Outbox bounds (defaults of the [fleet] outbox_* config keys).
@@ -40,6 +42,14 @@ _OUTBOX_COLUMNS = {
     "parked_at": "REAL",
     "park_reason": "TEXT",
 }
+FLEET_OUTBOX_SCHEMA = Schema(
+    "fleet outbox",
+    statements=(
+        "CREATE TABLE IF NOT EXISTS fleet_outbox(id INTEGER PRIMARY KEY, path TEXT, payload TEXT)",
+        "CREATE TABLE IF NOT EXISTS fleet_outbox_meta(key TEXT PRIMARY KEY, value INTEGER)",
+    ),
+    columns={"fleet_outbox": _OUTBOX_COLUMNS},
+)
 DAY_S = 86400.0
 DEFAULT_CERT_WARN_DAYS = 30.0
 
@@ -485,42 +495,23 @@ class FleetClient:
         self.db.commit()
         return True
 
+    def close(self) -> None:
+        self.db.close()
+
     def _send_direct(self, path, payload):
         self.sender(f"{self.base}{path}", payload.encode(), self._headers())
 
 
 def _outbox_db(path: str | os.PathLike[str], now: float) -> sqlite3.Connection:
-    """Open (creating or upgrading in place) a fleet outbox file.
+    """Open (creating or upgrading in place) a fleet outbox file; see quietroom.sqlitedb."""
 
-    Safe beside a running node: schema work happens inside BEGIN IMMEDIATE
-    with a busy timeout, and a column added concurrently is not an error.
-    """
-    db = sqlite3.connect(str(path), timeout=OUTBOX_BUSY_TIMEOUT_S)
-    try:
-        db.execute(f"PRAGMA busy_timeout={int(OUTBOX_BUSY_TIMEOUT_S * 1000)}")
-        db.execute("BEGIN IMMEDIATE")
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS fleet_outbox("
-            "id INTEGER PRIMARY KEY, path TEXT, payload TEXT)"
-        )
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS fleet_outbox_meta(key TEXT PRIMARY KEY, value INTEGER)"
-        )
-        have = {r[1] for r in db.execute("PRAGMA table_info(fleet_outbox)")}
-        for col, decl in _OUTBOX_COLUMNS.items():
-            if col not in have:
-                try:
-                    db.execute(f"ALTER TABLE fleet_outbox ADD COLUMN {col} {decl}")
-                except sqlite3.OperationalError as e:
-                    if "duplicate column" not in str(e).lower():
-                        raise
+    def backfill(db: sqlite3.Connection) -> None:
         # Rows queued before the upgrade start their age clock now.
         db.execute("UPDATE fleet_outbox SET created_at=? WHERE created_at IS NULL", (now,))
-        db.commit()
-    except BaseException:
-        db.close()
-        raise
-    return db
+
+    return open_db(
+        path, FLEET_OUTBOX_SCHEMA, busy_timeout_s=OUTBOX_BUSY_TIMEOUT_S, upgrade=backfill
+    )
 
 
 def fleet_outbox_rows(path, *, parked=None):

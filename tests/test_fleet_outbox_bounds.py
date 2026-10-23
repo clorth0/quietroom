@@ -350,31 +350,5 @@ def test_one_flush_delivers_a_bounded_batch(tmp_path):
     assert sent_ids(c) == list(range(120))
 
 
-def test_many_openers_upgrade_an_old_outbox_without_errors(tmp_path):
-    # `--outbox list --channel fleet` can open the file while the daemon starts.
-    import threading
-
-    p = tmp_path / "f.db"
-    db = sqlite3.connect(p)
-    db.execute("CREATE TABLE fleet_outbox(id INTEGER PRIMARY KEY, path TEXT, payload TEXT)")
-    db.execute("INSERT INTO fleet_outbox(path,payload) VALUES('/api/v1/events','{}')")
-    db.commit()
-    db.close()
-    barrier = threading.Barrier(12)
-    errors: list[BaseException] = []
-
-    def opener():
-        try:
-            barrier.wait()
-            fleet_outbox_rows(p)
-        except BaseException as e:  # noqa: BLE001 - collected for the assertion
-            errors.append(e)
-
-    threads = [threading.Thread(target=opener) for _ in range(12)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert errors == []
-    [row] = fleet_outbox_rows(p)
-    assert row["attempts"] == 0 and row["created_at"] is not None
+# Concurrent upgrade of an old fleet outbox: tests/test_concurrent_open_forced.py
+# (deterministic; replaces the thread-pile test that caught the race 3 runs in 10).

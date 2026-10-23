@@ -14,40 +14,48 @@ from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
 from quietroom.engine.spectrum import Baseline
+from quietroom.sqlitedb import BUSY_TIMEOUT_S, Schema, open_db
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS nodes(
- node_id TEXT PRIMARY KEY, site TEXT, floor TEXT, room TEXT, updated_at REAL);
-CREATE TABLE IF NOT EXISTS baselines(
- id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, version INTEGER,
- created_at REAL, sweep_count INTEGER, blob BLOB, UNIQUE(node_id,segment,version));
-CREATE TABLE IF NOT EXISTS sweeps(
- id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, timestamp REAL, blob BLOB);
-CREATE TABLE IF NOT EXISTS findings(
- id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, timestamp REAL,
- freq_hz REAL, score REAL, raw_score REAL, band TEXT, reasons TEXT);
-CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id,timestamp);
-CREATE INDEX IF NOT EXISTS idx_sweeps_node ON sweeps(node_id,timestamp);
-CREATE TABLE IF NOT EXISTS baseline_anchors(
- id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, fingerprint TEXT, version INTEGER,
- set_at REAL, reason TEXT, detail TEXT DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS control_requests(
- id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, command TEXT, args TEXT DEFAULT '{}',
- requested_at REAL, status TEXT DEFAULT 'pending', result TEXT DEFAULT '{}', done_at REAL);
-CREATE INDEX IF NOT EXISTS idx_control_pending ON control_requests(node_id,status);
-"""
 
 CONTROL_COMMANDS = ("rebaseline", "ack", "promote-anchor")
 
-# Columns added after the first schema shipped; applied with ALTER TABLE so an
-# existing node database upgrades in place. Pre-policy rows read back with an
-# empty fingerprint, which the re-baseline policy treats as "unknown front end".
 _BASELINE_COLUMNS = {
     "reason": "TEXT DEFAULT ''",
     "fingerprint": "TEXT DEFAULT ''",
     "captured_at": "REAL",
     "detail": "TEXT DEFAULT '{}'",
 }
+
+STORE_SCHEMA = Schema(
+    "store",
+    statements=(
+        "CREATE TABLE IF NOT EXISTS nodes("
+        " node_id TEXT PRIMARY KEY, site TEXT, floor TEXT, room TEXT, updated_at REAL)",
+        "CREATE TABLE IF NOT EXISTS baselines("
+        " id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, version INTEGER, "
+        " created_at REAL, sweep_count INTEGER, blob BLOB, UNIQUE(node_id,segment,version))",
+        "CREATE TABLE IF NOT EXISTS sweeps("
+        " id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, timestamp REAL, blob BLOB)",
+        "CREATE TABLE IF NOT EXISTS findings("
+        " id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, timestamp REAL, "
+        " freq_hz REAL, score REAL, raw_score REAL, band TEXT, reasons TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id,timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_sweeps_node ON sweeps(node_id,timestamp)",
+        "CREATE TABLE IF NOT EXISTS baseline_anchors("
+        " id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, fingerprint TEXT, version INTEGER, "
+        " set_at REAL, reason TEXT, detail TEXT DEFAULT '{}')",
+        "CREATE TABLE IF NOT EXISTS control_requests("
+        " id INTEGER PRIMARY KEY, node_id TEXT, segment TEXT, command TEXT,"
+        " args TEXT DEFAULT '{}', requested_at REAL, status TEXT DEFAULT 'pending',"
+        " result TEXT DEFAULT '{}', done_at REAL)",
+        "CREATE INDEX IF NOT EXISTS idx_control_pending ON control_requests(node_id,status)",
+    ),
+    # Columns added after the first schema shipped; an existing node database
+    # upgrades in place. Pre-policy rows read back with an empty fingerprint,
+    # which the re-baseline policy treats as "unknown front end".
+    columns={"baselines": _BASELINE_COLUMNS},
+    wal=True,
+)
 
 
 @dataclass(frozen=True)
@@ -72,75 +80,18 @@ def _unblob(b):
     return d["freqs"], d["power"]
 
 
-# How long an open waits on another connection (the daemon, or a CLI command
-# racing it) before giving up. Applies to every statement on the connection.
-BUSY_TIMEOUT_S = 30.0
-
-
-def _is_lock_error(e: sqlite3.OperationalError) -> bool:
-    msg = str(e).lower()
-    return "locked" in msg or "busy" in msg
-
-
 class Store:
     """One node's SQLite database. Safe to open from several processes at once.
 
     The daemon and ``quietroom-node --rebaseline/--ack/--promote-anchor`` share
-    this file, so opening it (switch to WAL, create tables, upgrade an older
-    schema) is serialized: the WAL switch is retried while another opener holds
-    the lock, and schema setup runs in one ``BEGIN IMMEDIATE`` transaction so
-    exactly one opener applies a column migration and the rest see it done.
+    this file; :func:`quietroom.sqlitedb.open_db` serializes opening it (WAL
+    switch retried, schema and column upgrade in one ``BEGIN IMMEDIATE``).
     """
 
     def __init__(self, path, busy_timeout_s: float = BUSY_TIMEOUT_S):
-        self.db = sqlite3.connect(str(path), timeout=busy_timeout_s)
-        try:
-            self.db.row_factory = sqlite3.Row
-            self.db.execute(f"PRAGMA busy_timeout={int(busy_timeout_s * 1000)}")
-            self._enable_wal(busy_timeout_s)
-            self._ensure_schema()
-        except BaseException:
-            self.db.close()
-            raise
-
-    def _enable_wal(self, busy_timeout_s: float) -> None:
-        # Switching journal mode needs an exclusive lock and SQLite can report
-        # SQLITE_BUSY here without consulting the busy handler, so retry it.
-        deadline = time.monotonic() + busy_timeout_s
-        delay = 0.005
-        while True:
-            try:
-                self.db.execute("PRAGMA journal_mode=WAL").fetchone()
-                return
-            except sqlite3.OperationalError as e:
-                if not _is_lock_error(e) or time.monotonic() >= deadline:
-                    raise
-            time.sleep(delay)
-            delay = min(delay * 2, 0.1)
-
-    def _ensure_schema(self) -> None:
-        # executescript() would COMMIT first, so run the statements one by one
-        # inside a single write transaction taken up front.
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            for stmt in SCHEMA.split(";"):
-                if stmt.strip():
-                    self.db.execute(stmt)
-            have = {r[1] for r in self.db.execute("PRAGMA table_info(baselines)")}
-            for col, decl in _BASELINE_COLUMNS.items():
-                if col in have:
-                    continue
-                try:
-                    self.db.execute(f"ALTER TABLE baselines ADD COLUMN {col} {decl}")
-                except sqlite3.OperationalError as e:
-                    # Harmless: someone else added it (e.g. a process that
-                    # opened the file without this lock).
-                    if "duplicate column" not in str(e).lower():
-                        raise
-            self.db.commit()
-        except BaseException:
-            self.db.rollback()
-            raise
+        self.db = open_db(
+            path, STORE_SCHEMA, busy_timeout_s=busy_timeout_s, row_factory=sqlite3.Row
+        )
 
     def close(self):
         self.db.close()
