@@ -64,6 +64,9 @@ NODE_FIELDS = {
     # Each loop pings the systemd watchdog (WatchdogSec=120), so a poll longer
     # than a minute risks a watchdog kill; under 0.1 s is a busy loop.
     "poll_s": Field("float", 1.0, lo=0.1, hi=60.0),
+    # One wall-clock budget for the final flush of every outbox on SIGTERM. With
+    # one send in flight on top it must fit the unit's TimeoutStopSec=60.
+    "shutdown_flush_s": Field("float", 30.0, lo=0, lo_open=True, hi=45.0),
     "antenna": Field("str", ""),
 }
 SEGMENT_FIELDS = {
@@ -87,6 +90,8 @@ ALERT_FIELDS = {
     "webhook_url": Field("url", "", schemes=("http", "https")),
     "max_attempts": Field("int", 5, lo=0, note="(0 = never)"),
     "max_age_s": Field("float", 7 * DAY, lo=0, note="(0 = never)"),
+    # Per channel, per tick: no new send starts after this many seconds.
+    "flush_budget_s": Field("float", 15.0, lo=0, lo_open=True, hi=30.0),
 }
 BASELINE_FIELDS = {
     "max_age_s": Field("float", 0.0, lo=0, note="(0 = never)"),
@@ -122,6 +127,8 @@ FLEET_FIELDS = {
     "outbox_max_rows": Field("int", 20_000, lo=1),
     "outbox_max_age_s": Field("float", 7 * DAY, lo=0, note="(0 = never)"),
     "outbox_max_attempts": Field("int", 5, lo=0, note="(0 = never)"),
+    # Per tick: no new upload starts after this many seconds.
+    "flush_budget_s": Field("float", 15.0, lo=0, lo_open=True, hi=30.0),
 }
 SECTIONS = ("node", "segments", "store", "alerts", "baseline", "fleet")
 
@@ -304,6 +311,7 @@ class FleetConfig:
     outbox_max_rows: int = 20_000
     outbox_max_age_s: float = 7 * DAY
     outbox_max_attempts: int = 5
+    flush_budget_s: float = 15.0
 
     @classmethod
     def from_dict(cls, d: Any, store_path: str = "") -> FleetConfig | None:
@@ -356,6 +364,7 @@ class FleetConfig:
             outbox_max_rows=v["outbox_max_rows"],
             outbox_max_age_s=v["outbox_max_age_s"],
             outbox_max_attempts=v["outbox_max_attempts"],
+            flush_budget_s=v["flush_budget_s"],
             **files,
         )
 
@@ -386,6 +395,10 @@ class NodeConfig:
     alert_max_attempts: int = 5
     # Park any alert undelivered for this long; 0 = never.
     alert_max_age_s: float = 7 * DAY
+    # Seconds per alert-channel flush (each tick) before no new send starts.
+    alert_flush_budget_s: float = 15.0
+    # One budget for the final flush of all outboxes when the daemon stops.
+    shutdown_flush_s: float = 30.0
 
     @property
     def fleet_base_url(self) -> str:
@@ -437,6 +450,8 @@ class NodeConfig:
             email=email,
             alert_max_attempts=alerts["max_attempts"],
             alert_max_age_s=alerts["max_age_s"],
+            alert_flush_budget_s=alerts["flush_budget_s"],
+            shutdown_flush_s=n["shutdown_flush_s"],
         )
 
     @staticmethod
@@ -476,6 +491,12 @@ class NodeConfig:
         }
 
 
+# Warn when the worst case leaves less than ~30 s of WatchdogSec=120 for the sweep
+# itself, or less than 5 s of TimeoutStopSec=60 for closing the files.
+TICK_FLUSH_WARN_S = 90.0
+STOP_FLUSH_WARN_S = 55.0
+
+
 def config_warnings(cfg: NodeConfig) -> list[str]:
     """Valid but probably unintended settings, for --check-config and start-up."""
     out = []
@@ -492,6 +513,31 @@ def config_warnings(cfg: NodeConfig) -> list[str]:
         out.append(
             "fleet.base_url uses plain http:// with auth = \"legacy-token\": the shared "
             "QUIETROOM_CENTRAL_TOKEN crosses the network in clear; use https://"
+        )
+    # Worst cases: each sink spends its whole budget and then waits out one send
+    # timeout (the send in flight). Webhook and fleet uploads time out at 10 s.
+    sends: list[tuple[str, float, float]] = []  # (sink, budget, send timeout)
+    if cfg.email is not None:
+        sends.append(("email", cfg.alert_flush_budget_s, cfg.email.timeout_s))
+    if cfg.webhook_url:
+        sends.append(("webhook", cfg.alert_flush_budget_s, 10.0))
+    if fc is not None:
+        sends.append(("fleet", fc.flush_budget_s, 10.0))
+    tick = sum(b + t for _, b, t in sends)
+    if tick > TICK_FLUSH_WARN_S:
+        out.append(
+            f"a tick's outbox flushes can take up to {tick:g} s ("
+            + ", ".join(f"{n} {b:g}+{t:g}" for n, b, t in sends)
+            + " s), close to the systemd watchdog (WatchdogSec=120); lower "
+            "alerts.flush_budget_s, fleet.flush_budget_s or alerts.email.timeout_s"
+        )
+    worst_send = max((t for _, _, t in sends), default=0.0)
+    stop = cfg.shutdown_flush_s + worst_send
+    if stop > STOP_FLUSH_WARN_S:
+        out.append(
+            f"stopping can take up to {stop:g} s (node.shutdown_flush_s = "
+            f"{cfg.shutdown_flush_s:g} plus one {worst_send:g} s send in flight), close to "
+            "the unit's TimeoutStopSec=60, after which systemd kills the node mid-send"
         )
     late = [
         f"{s.name!r} (interval_s = {s.interval_s:g})"

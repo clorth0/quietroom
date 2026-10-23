@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import smtplib
 import time
 import urllib.request
@@ -219,6 +220,21 @@ DEFAULT_MAX_AGE_S = 7 * 86400.0
 # FLUSH_BATCH: a long backlog drains over several ticks instead of holding one
 # tick past the systemd watchdog.
 ALERT_FLUSH_BATCH = 500
+# ...and a wall-clock budget per flush: a relay that is up but slow (1 s a
+# message) must not hold a tick for 500 s. Once spent, no new send starts; the
+# one in flight finishes (at most one send timeout more) and the rest stay
+# queued. 15 s: two alert channels and the fleet outbox, each a full budget plus
+# one 10 s send in flight, still leave a tick well inside WatchdogSec=120.
+ALERT_FLUSH_BUDGET_S = 15.0
+
+
+def check_flush_budget(value, what="flush_budget_s"):
+    """A positive, finite number of seconds; ValueError naming ``what`` otherwise."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{what} must be a number of seconds > 0, got {value!r}")
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(f"{what} must be a number of seconds > 0, got {value!r}")
+    return float(value)
 
 ALERT_OUTBOX_SCHEMA = Schema(
     "alert outbox",
@@ -261,12 +277,18 @@ class Outbox:
         max_attempts=DEFAULT_MAX_ATTEMPTS,
         max_age_s=DEFAULT_MAX_AGE_S,
         flush_batch=ALERT_FLUSH_BATCH,
+        flush_budget_s=ALERT_FLUSH_BUDGET_S,
+        monotonic=time.monotonic,
     ):
         if isinstance(flush_batch, bool) or not isinstance(flush_batch, int) or flush_batch < 1:
             raise ValueError(
                 f"alert outbox flush_batch must be an integer >= 1, got {flush_batch!r}"
             )
         self.flush_batch = flush_batch
+        self.flush_budget_s = check_flush_budget(flush_budget_s, "alert outbox flush_budget_s")
+        self.monotonic = monotonic
+        # Did the most recent flush stop because its time budget ran out?
+        self.last_flush_budget_spent = False
         self.clock = clock or time.time
         self.db = _outbox_db(path, self.clock())
         self.channel = channel
@@ -345,7 +367,23 @@ class Outbox:
     def _suspect(self, attempts):
         return self.max_attempts > 0 and int(attempts) >= self.max_attempts
 
-    def flush(self, send, stop_on_failure=True):
+    def flush(self, send, stop_on_failure=True, *, budget_s=None, should_stop=None):
+        """Deliver due alerts in order; returns how many went out.
+
+        Stops starting sends after ``flush_batch`` attempts, once ``budget_s``
+        seconds (default ``flush_budget_s``) have passed, or once
+        ``should_stop()`` is true. Whatever is left stays queued.
+        """
+        budget = self.flush_budget_s if budget_s is None else float(budget_s)
+        deadline = self.monotonic() + budget
+        self.last_flush_budget_spent = False
+
+        def out_of_time():
+            if self.monotonic() >= deadline:
+                self.last_flush_budget_spent = True
+                return True
+            return should_stop is not None and should_stop()
+
         now = self.clock()
         self.last_parked = []
         if self.max_age_s > 0:
@@ -372,7 +410,7 @@ class Outbox:
                 continue
             if row[3] > now:
                 break
-            if tried >= self.flush_batch:
+            if tried >= self.flush_batch or out_of_time():
                 break
             tried += 1
             if self._attempt(send, row, now):
@@ -387,7 +425,7 @@ class Outbox:
             for row in suspects:
                 if row[3] > now:
                     continue
-                if tried >= self.flush_batch:
+                if tried >= self.flush_batch or out_of_time():
                     break
                 tried += 1
                 if self._attempt(send, row, now):
@@ -492,8 +530,8 @@ class QueuedChannel:
     def __call__(self, alert):
         self.outbox.add(alert)
 
-    def flush(self):
-        return self.outbox.flush(self.send)
+    def flush(self, *, budget_s=None, should_stop=None):
+        return self.outbox.flush(self.send, budget_s=budget_s, should_stop=should_stop)
 
     def close(self):
         self.outbox.close()

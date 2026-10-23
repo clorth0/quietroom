@@ -36,6 +36,7 @@ def _outbox_bounds(fc: FleetConfig) -> dict:
         "max_rows": fc.outbox_max_rows,
         "max_age_s": fc.outbox_max_age_s,
         "max_attempts": fc.outbox_max_attempts,
+        "flush_budget_s": fc.flush_budget_s,
     }
 
 
@@ -192,6 +193,7 @@ def build_alerting(cfg, env):
             Outbox(
                 path, channel=name, backoff_s=30, max_backoff_s=3600,
                 max_attempts=cfg.alert_max_attempts, max_age_s=cfg.alert_max_age_s,
+                flush_budget_s=cfg.alert_flush_budget_s,
             ),
         )
         for name, send in sinks

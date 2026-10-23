@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Protocol
 from quietroom.bands import bands_for
 from quietroom.config import SegmentConfig
@@ -37,8 +38,19 @@ class FleetUplink(Protocol):
 
     def send_events(self, node_id: str, events: list[dict[str, Any]]) -> bool: ...
     def send_heartbeat(self, payload: dict[str, Any]) -> bool: ...
-    def flush(self) -> int: ...
+    def flush(
+        self,
+        *,
+        budget_s: float | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> int: ...
     def pending(self) -> int: ...
+
+
+# Default [node] shutdown_flush_s: the final flush of all outboxes on SIGTERM.
+# Plus one 10 s send in flight and closing the files, it fits the unit's
+# TimeoutStopSec=60 with room to spare.
+SHUTDOWN_FLUSH_BUDGET_S = 30.0
 
 
 @dataclass
@@ -423,7 +435,7 @@ class MonitorService:
         result = TickResult()
         if self.fleet is not None:
             # Retry the store-and-forward backlog every tick, even when no segment is due.
-            self.fleet.flush()
+            self.fleet.flush(**self._tick_flush_kwargs())
             self._report_fleet_parked()
         try:
             self.process_controls(now)
@@ -599,9 +611,20 @@ class MonitorService:
             why += "; acknowledge it once resolved (--ack) or override with --force"
         return "refused", {"why": why}
 
-    def flush_alerts(self):
+    def _tick_flush_kwargs(self) -> dict[str, Any]:
+        # A stop requested mid-flush ends the tick's flush; shutdown() then makes
+        # the final one under its own budget, so the two never add up past
+        # TimeoutStopSec.
+        if self.stop_event is None:
+            return {}
+        return {"should_stop": self.stop_event.is_set}
+
+    def flush_alerts(self, *, deadline: float | None = None):
         """Deliver queued alerts (every tick, so retries happen with no new alert).
 
+        Each channel's flush has its own time budget (``[alerts]
+        flush_budget_s``); with ``deadline`` (a ``time.monotonic()`` value, used
+        by shutdown) all channels share what is left of one budget instead.
         Delivery problems are recorded per channel and never become sweep
         errors: a down SMTP relay must not look like a radio fault.
         """
@@ -610,8 +633,12 @@ class MonitorService:
             if flush is None:
                 continue
             name = getattr(ch, "name", repr(ch))
+            if deadline is None:
+                kwargs = self._tick_flush_kwargs()
+            else:
+                kwargs = {"budget_s": max(0.0, deadline - time.monotonic())}
             try:
-                flush()
+                flush(**kwargs)
                 self.delivery_errors.pop(name, None)
             except Exception as e:  # outbox itself failed (disk, sqlite)
                 self.delivery_errors[name] = f"{type(e).__name__}: {e}"
@@ -765,13 +792,17 @@ class MonitorService:
         if self.notifier is not None:
             self.notifier.stopping()
             self.notifier.status(f"stopping ({reason})")
+        # One budget for every outbox together, so the stop fits TimeoutStopSec=60
+        # however many sinks there are; whatever is left stays queued on disk.
+        budget = getattr(self.config, "shutdown_flush_s", SHUTDOWN_FLUSH_BUDGET_S)
+        deadline = time.monotonic() + budget
         try:
-            self.flush_alerts()  # records per-channel failures itself
+            self.flush_alerts(deadline=deadline)  # records per-channel failures itself
         except Exception as e:  # noqa: BLE001 - shutdown goes on regardless
             self.last_error = f"shutdown alert flush: {e}"
         if self.fleet is not None:
             try:
-                self.fleet.flush()
+                self.fleet.flush(budget_s=max(0.0, deadline - time.monotonic()))
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"shutdown fleet flush: {e}"
         for thing in [*self.notifiers, self.fleet, self.store, self.device]:

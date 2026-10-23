@@ -203,7 +203,7 @@ class Channel:
     def __call__(self, alert):
         pass
 
-    def flush(self):
+    def flush(self, *, budget_s=None, should_stop=None):
         self.log.append("alerts.flush")
 
     def close(self):
@@ -237,7 +237,7 @@ def test_shutdown_flush_failures_do_not_prevent_closing():
     log: list[str] = []
 
     class Broken(Channel):
-        def flush(self):
+        def flush(self, **kw):
             raise sqlite3.OperationalError("disk I/O error")
 
     svc = MonitorService(
@@ -284,3 +284,90 @@ def test_systemd_unit_gives_the_clean_stop_time_and_uses_sigterm():
     assert "TimeoutStopSec=60" in lines
     assert not any(ln.startswith("KillSignal=") for ln in lines)  # default SIGTERM
     assert "Type=notify" in lines and "NotifyAccess=main" in lines  # STOPPING=1 is accepted
+
+
+def test_real_daemon_stop_stays_inside_the_shutdown_budget_with_a_slow_sink(short_dir):
+    """A relay that is up but slow (0.3 s a request) and 200 queued alerts.
+
+    Unbounded, the final flush would take ~60 s, the whole TimeoutStopSec, and
+    systemd would SIGKILL the node mid-send. With ``shutdown_flush_s = 1.5`` the
+    stop ends within the budget plus the one request in flight, and the rest
+    stays queued on disk.
+    """
+    import http.server
+    import threading
+
+    from quietroom.alerts import Outbox
+
+    hits = []
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            time.sleep(0.3)
+            hits.append(time.monotonic())
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    d = short_dir
+    ob = Outbox(d / "node.db.alerts-outbox", channel="webhook")
+    for i in range(200):
+        ob.add({"type": "finding", "i": i})
+    ob.close()
+    cfg = d / "node.toml"
+    cfg.write_text(
+        f"""
+[node]
+id = "budget-test"
+poll_s = 0.5
+shutdown_flush_s = 1.5
+[store]
+path = "{d / 'node.db'}"
+[alerts]
+webhook_url = "http://127.0.0.1:{srv.server_port}/hook"
+min_score = 99
+flush_budget_s = 1.0
+[[segments]]
+name = "covert-uhf"
+start_hz = 300_000_000
+stop_hz = 316_000_000
+interval_s = 1.0
+"""
+    )
+    sock_path = str(d / "notify")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    sock.bind(sock_path)
+    proc = subprocess.Popen(
+        [*NODE, "--config", str(cfg), "--demo"],
+        env={**os.environ, "NOTIFY_SOCKET": sock_path},
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        start = _recv_until(sock, "WATCHDOG=1", time.monotonic() + 30)
+        assert "WATCHDOG=1" in start, start  # one tick done: its flush was cut at ~1 s
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        _, err = proc.communicate(timeout=30)
+        took = time.monotonic() - t0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        srv.shutdown()
+        sock.close()
+    assert proc.returncode == 0, err
+    # the in-tick flush may be mid-request when the signal lands, then 1.5 s
+    # shutdown budget plus the request in flight
+    assert took < 0.3 + 1.5 + 0.3 + 1.5, f"took {took:.2f} s to stop"
+    assert hits, "the slow sink was used"
+    left = Outbox(d / "node.db.alerts-outbox", channel="webhook")
+    try:
+        assert 0 < left.pending() < 200  # some delivered, the rest still queued
+        assert left.pending() + len(hits) == 200  # nothing lost
+    finally:
+        left.close()
