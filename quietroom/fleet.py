@@ -8,6 +8,7 @@ bearer token survives only as an explicitly configured, deprecated fallback.
 """
 
 from __future__ import annotations
+import calendar
 import functools
 import json
 import os
@@ -22,6 +23,18 @@ from pathlib import Path
 from typing import Any
 
 URN_UUID_PREFIX = "urn:uuid:"
+DAY_S = 86400.0
+DEFAULT_CERT_WARN_DAYS = 30.0
+
+# The shared bearer token became a deprecated fallback with per-node mTLS (#52).
+# It is kept for migration only; the plan below is printed wherever it is used.
+LEGACY_TOKEN_DEPRECATED_AT = float(calendar.timegm((2026, 10, 22, 0, 0, 0)))
+LEGACY_TOKEN_SUNSET = float(calendar.timegm((2027, 4, 1, 0, 0, 0)))
+LEGACY_TOKEN_REMOVAL = "removal planned for quietroom 0.5.0, not before 2027-04-01"
+LEGACY_TOKEN_DOCS = (
+    "https://github.com/clorth0/quietroom/blob/main/packaging/fleet-mtls.md"
+    "#migration-from-the-shared-token"
+)
 
 PeerCert = Mapping[str, Any]
 
@@ -74,6 +87,53 @@ def cert_file_identity(path: str | os.PathLike[str]) -> str | None:
     if decode is None:
         raise NotImplementedError("this Python cannot decode certificate files")
     return identity_from_peer_cert(decode(os.fspath(path)))
+
+
+def cert_file_not_after(path: str | os.PathLike[str]) -> float:
+    """``notAfter`` of a PEM certificate on disk, as a Unix timestamp.
+
+    Same stdlib decoder caveat as ``cert_file_identity`` (NotImplementedError).
+    """
+    decode = getattr(getattr(ssl, "_ssl", None), "_test_decode_cert", None)
+    if decode is None:
+        raise NotImplementedError("this Python cannot decode certificate files")
+    return float(ssl.cert_time_to_seconds(decode(os.fspath(path))["notAfter"]))
+
+
+def _utc(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def cert_expiry(not_after: float, now: float | None = None, warn_s: float = 30 * DAY_S) -> dict:
+    """Expiry status of a certificate; ``warn_s`` <= 0 never flags a valid cert as expiring."""
+    now = time.time() if now is None else now
+    remaining = not_after - now
+    expired = remaining < 0
+    return {
+        "not_after": _utc(not_after),
+        "expires_in_s": int(remaining),
+        "expiring": expired or (warn_s > 0 and remaining <= warn_s),
+        "expired": expired,
+    }
+
+
+CERT_EXPIRY_WARNING_PREFIXES = ("client certificate EXPIRED", "client certificate expires in")
+
+
+def cert_expiry_warning(status: dict) -> str | None:
+    """Operator-facing warning for a ``cert_expiry`` status, or None if nothing to say."""
+    if status["expired"]:
+        return (
+            f"client certificate EXPIRED at {status['not_after']}: central will refuse the "
+            "TLS handshake; issue a new certificate for this node"
+        )
+    if status["expiring"]:
+        days = int(status["expires_in_s"] // DAY_S)
+        return (
+            f"client certificate expires in {days} days ({status['not_after']}); "
+            "issue a new certificate for this node before then"
+        )
+    return None
 
 
 def client_tls_context(
@@ -130,6 +190,8 @@ def heartbeat_payload(ident, health, now=None):
         "alert_outbox": health.get("alert_outbox", {}),
         "alert_parked": health.get("alert_parked", {}),
         "alert_delivery_errors": health.get("alert_delivery_errors", {}),
+        # fleet identity: client-certificate expiry
+        "fleet_cert": health.get("fleet_cert"),
     }
 
 
@@ -163,6 +225,8 @@ class FleetClient:
         *,
         ssl_context: ssl.SSLContext | None = None,
         node_uuid: str | None = None,
+        cert_not_after: float | None = None,
+        cert_warn_s: float = DEFAULT_CERT_WARN_DAYS * DAY_S,
     ):
         self.base = base_url.rstrip("/")
         if ssl_context is not None and not self.base.lower().startswith("https://"):
@@ -172,6 +236,8 @@ class FleetClient:
         self.token = token
         self.ssl_context = ssl_context
         self.node_uuid = node_uuid
+        self.cert_not_after = cert_not_after
+        self.cert_warn_s = cert_warn_s
         self.sender: Sender = sender or functools.partial(_post, context=ssl_context)
         self.db = sqlite3.connect(str(outbox_path))
         self.db.execute(
@@ -211,6 +277,12 @@ class FleetClient:
         if self.ssl_context is not None and self.node_uuid is not None:
             return "mtls"
         return "legacy-token" if self.token else "none"
+
+    def cert_status(self, now: float | None = None) -> dict | None:
+        """Expiry of this node's client certificate (None without mTLS or if unknown)."""
+        if self.cert_not_after is None:
+            return None
+        return cert_expiry(self.cert_not_after, now, self.cert_warn_s)
 
     def send_heartbeat(self, payload):
         return self._send("/api/v1/heartbeat", payload)

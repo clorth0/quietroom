@@ -9,7 +9,9 @@ Operator/site responsibilities until automated:
 - Full-disk or data-partition encryption for /var/lib/quietroom (SQLite, keys).
 - Per-node credentials: unique update key per node, and a per-node mTLS client
   certificate bound to the node UUID for central (packaging/fleet-mtls.md);
-  the shared `QUIETROOM_CENTRAL_TOKEN` is a deprecated migration fallback.
+  the shared `QUIETROOM_CENTRAL_TOKEN` is a deprecated migration fallback
+  (removal planned for 0.5.0, not before 2027-04-01). Revoke a node with
+  central's `--deny-list` (no restart needed).
 - Local web UI stays loopback-only, or behind TLS + individual accounts; never
   expose Werkzeug directly (see SECURITY.md).
 - Read-only root filesystem where the OS supports it, with /var/lib/quietroom

@@ -89,3 +89,4 @@ heartbeat_s = 60
 # key_file = "/etc/quietroom/fleet/node.key"        # mode 0600
 # ca_file = "/etc/quietroom/fleet/central-ca.crt"   # pins central's server CA
 # identity_path = "/var/lib/quietroom/identity.json"  # default: next to [store] path
+# cert_warn_days = 30     # warn in health/heartbeat this long before node.crt expires
