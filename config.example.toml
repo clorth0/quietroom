@@ -11,6 +11,7 @@ region = "us"
 threshold_k = 4.0
 baseline_cycles = 5
 poll_s = 1.0
+shutdown_flush_s = 30.0   # final flush of all outboxes on SIGTERM; (0, 45], fits TimeoutStopSec=60
 antenna = "ANT500"        # label only; changing it invalidates stored baselines
 
 [[segments]]
@@ -66,6 +67,7 @@ cooldown_s = 3600
 webhook_url = ""          # set to enable webhook alerts (secret via QUIETROOM_WEBHOOK_SECRET)
 max_attempts = 5          # after this many failures an alert stops blocking its channel
 max_age_s = 604800        # park alerts undelivered this long (7 days); 0 = never
+flush_budget_s = 15.0     # per channel per tick: no new send after this many s; (0, 30]
 # Parked alerts: quietroom-node --outbox list|requeue (packaging/hardening.md)
 
 # Email alerts. Remove/comment this table to disable. The SMTP password comes
@@ -102,3 +104,4 @@ heartbeat_s = 60
 # outbox_max_rows = 20000   # >= 1; this bound cannot be disabled
 # outbox_max_age_s = 604800 # park uploads undelivered this long (7 days); 0 = never
 # outbox_max_attempts = 5   # failures before a row stops blocking the queue; 0 = never
+# flush_budget_s = 15.0     # per tick: no new upload after this many s; (0, 30]

@@ -111,7 +111,7 @@ def test_the_daemon_prints_config_warnings_at_startup(tmp_path, capsys, monkeypa
         def __init__(self, *a, **kw):
             pass
 
-        def run(self):
+        def run(self, stop_event=None):
             return 0
 
     monkeypatch.setattr(cli, "MonitorService", Fake)

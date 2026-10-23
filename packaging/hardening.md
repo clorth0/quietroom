@@ -63,8 +63,10 @@ sudo -u quietroom sh -c 'set -a; . /etc/quietroom/secrets.env; exec \
 ```
 
 On central, `quietroom-central --cert ... --key ... --client-ca ...
-[--allow-legacy-token] --check-config` does the same for
-`QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN` and the TLS files.
+[--allow-legacy-token] [--deny-list FILE] [--cert-warn-days N] --check-config`
+does the same for `QUIETROOM_CENTRAL_TOKEN`, `QUIETROOM_CENTRAL_READ_TOKEN`, the
+TLS files, the deny list (exists, is UTF-8, every line a UUID; reports the count)
+and `--cert-warn-days` (an integer from 0 to 365; 0 = never warn).
 
 ## Undeliverable alerts (dead letters)
 
@@ -90,6 +92,13 @@ quietroom-node --config /etc/quietroom/config.toml --outbox requeue --all --chan
 A requeued alert keeps its place in line with a fresh attempt budget and age;
 the running node sends it on its next tick.
 
+Each tick, each channel's flush stops starting sends after 500 attempts
+(`ALERT_FLUSH_BATCH`, mirroring the fleet outbox) or after `[alerts]
+flush_budget_s` seconds (default 15, at most 30), whichever comes first. The
+send in flight finishes, the rest stay queued in order, and a long backlog or a
+slow-but-up relay (say 1 s a message) drains over several ticks instead of
+holding one past the watchdog.
+
 ## Fleet upload backlog
 
 Uploads central has not accepted queue in `<store path>.fleet-outbox` and are
@@ -108,8 +117,9 @@ from central cannot fill its disk:
   only if it fails right after central accepted another row. An outage alone
   never parks anything.
 
-At most 500 rows go out per tick, so a long backlog drains over several ticks
-instead of holding one tick past the watchdog. Requeued rows count toward
+At most 500 rows go out per tick, and no new upload starts after `[fleet]
+flush_budget_s` seconds (default 15, at most 30), so a long backlog drains over
+several ticks instead of holding one tick past the watchdog. Requeued rows count toward
 `outbox_max_rows` again, so requeueing more than that re-parks the oldest.
 
 Health and the heartbeat carry `fleet_outbox: {pending, parked, dropped}`; each
@@ -119,3 +129,35 @@ parking is printed to the journal and emitted locally as a `fleet_parked` event.
 quietroom-node --config /etc/quietroom/config.toml --outbox list --channel fleet --parked
 quietroom-node --config /etc/quietroom/config.toml --outbox requeue --channel fleet --all
 ```
+
+## Stopping the daemon
+
+`SIGTERM` (`systemctl stop`) and `SIGINT` stop the node cleanly. The current
+sweep finishes the segment in progress; segments not yet started are abandoned
+(they run on the next start). The node sends `STOPPING=1` to systemd, makes one
+last flush of the alert and fleet outboxes (anything undelivered stays queued on
+disk), closes the outboxes, store and SDR, and exits 0. A clean stop leaves no
+`node.db-wal`/`-shm` behind. The final flush has one budget for all outboxes
+together, `[node] shutdown_flush_s` (default 30 s, at most 45): after it no new
+send starts, and with the send in flight (10 s timeout for webhook and fleet,
+`[alerts.email] timeout_s` for SMTP) the stop still fits the unit's
+`TimeoutStopSec=60`. A stop that lands during a tick's flush cuts that flush
+short, so the two never add up. A second signal during shutdown kills the
+process with the default action.
+
+Worst cases are checked at start-up and by `--check-config`. If each sink
+spending its whole budget plus one send timeout adds up to more than 90 s per tick
+(WatchdogSec=120), or `shutdown_flush_s` plus the longest send timeout passes
+55 s, you get a warning.
+
+## SQLite databases
+
+The store, the alert outbox and the fleet outbox all open through
+`quietroom/sqlitedb.py` (`open_db` + a declarative `Schema`). It sets a busy
+timeout, switches the store to WAL with a retry on lock contention, and creates
+and upgrades the schema inside `BEGIN IMMEDIATE`, so two processes opening an old
+file at once (the daemon and `--outbox`/`--check-config`) serialise instead of
+racing; a column another process already added is treated as done. A test
+(`tests/test_sqlite_discipline.py`) fails if any other module runs DDL
+(`ALTER/CREATE/DROP`, `PRAGMA journal_mode`), `executescript` or
+`sqlite3.connect`.

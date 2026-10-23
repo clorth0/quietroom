@@ -67,6 +67,48 @@ def _warn(msg: str) -> None:
     print(f"quietroom-central: WARNING: {msg}", file=sys.stderr, flush=True)
 
 
+CERT_WARN_DAYS_MAX = 365
+
+
+def parse_cert_warn_days(value: object) -> int:
+    """``--cert-warn-days``: whole days from 0 to CERT_WARN_DAYS_MAX; 0 = never warn.
+
+    Same meaning as the node's ``[fleet] cert_warn_days = 0``: an expired
+    certificate is still reported as expired, a valid one is never "expiring".
+    """
+    allowed = f"an integer from 0 to {CERT_WARN_DAYS_MAX} (days; 0 = never warn)"
+    if isinstance(value, bool):
+        raise ValueError(f"--cert-warn-days must be {allowed}, got {value!r}")
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, str) and value.strip().lstrip("+").isdigit():
+        n = int(value.strip())
+    else:
+        raise ValueError(f"--cert-warn-days must be {allowed}, got {value!r}")
+    if not 0 <= n <= CERT_WARN_DAYS_MAX:
+        raise ValueError(f"--cert-warn-days must be {allowed}, got {n}")
+    return n
+
+
+def check_deny_list(path: str | os.PathLike[str]) -> int:
+    """Number of revoked UUIDs in a ``--deny-list`` file; ValueError naming the problem."""
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ValueError(f"--deny-list {p}: no such file") from None
+    except IsADirectoryError:
+        raise ValueError(f"--deny-list {p}: is a directory, not a file") from None
+    except UnicodeDecodeError:
+        raise ValueError(f"--deny-list {p}: not UTF-8 text") from None
+    except OSError as e:
+        raise ValueError(f"--deny-list {p}: unreadable: {e.strerror}") from None
+    try:
+        return len(parse_deny_list(text))
+    except ValueError as e:
+        raise ValueError(f"--deny-list {p}: {e}") from None
+
+
 def parse_deny_list(text: str) -> frozenset[str]:
     """Node UUIDs, one per line; ``#`` starts a comment. Any other content is an error."""
     out: set[str] = set()
@@ -406,9 +448,15 @@ def build_central(
 
 
 def check_central_config(
-    cert: str, key: str, client_ca: str, *, allow_legacy_token: bool, env: dict[str, str]
+    cert: str, key: str, client_ca: str, *, allow_legacy_token: bool, env: dict[str, str],
+    deny_list: str | None = None,
+    cert_warn_days: object = int(DEFAULT_CERT_WARN_DAYS),
 ) -> dict[str, Any]:
-    """Side-effect-free audit for ``quietroom-central --check-config``."""
+    """Side-effect-free audit for ``quietroom-central --check-config``.
+
+    Besides TLS material and tokens: the ``--deny-list`` file (exists, UTF-8,
+    one node UUID per line) and ``--cert-warn-days`` (see parse_cert_warn_days).
+    """
     from quietroom.checks import Report, present
     from quietroom.update import check_secret_file
 
@@ -439,6 +487,17 @@ def check_central_config(
         else:
             r.check("TLS material loads", True)
             r.warnings += check_secret_file(key)
+    if deny_list:
+        try:
+            n = check_deny_list(deny_list)
+        except ValueError as e:
+            r.check("deny list loads", False, str(e))
+        else:
+            r.check("deny list loads", True, detail=f"{n} revoked ({deny_list})")
+    try:
+        parse_cert_warn_days(cert_warn_days)
+    except ValueError as e:
+        r.check("--cert-warn-days in range", False, str(e))
     return r.as_dict()
 
 
@@ -470,16 +529,15 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
     )
     p.add_argument(
         "--cert-warn-days",
-        type=float,
-        default=DEFAULT_CERT_WARN_DAYS,
-        help="flag node client certificates expiring within this many days (0: never)",
+        default=str(int(DEFAULT_CERT_WARN_DAYS)),
+        help="flag node client certificates expiring within this many days "
+        f"(an integer, 0-{CERT_WARN_DAYS_MAX}; 0 = never warn; default %(default)s)",
     )
     a = p.parse_args(argv)
-    if a.cert_warn_days < 0:
-        p.error("--cert-warn-days must be >= 0")
     if a.check_config:
         report = check_central_config(
-            a.cert, a.key, a.client_ca, allow_legacy_token=a.allow_legacy_token, env=env
+            a.cert, a.key, a.client_ca, allow_legacy_token=a.allow_legacy_token, env=env,
+            deny_list=a.deny_list, cert_warn_days=a.cert_warn_days,
         )
         print(json.dumps(report, indent=2))
         for e in report["errors"]:
@@ -487,6 +545,10 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         for w in report["warnings"]:
             print(f"WARNING: {w}", file=sys.stderr)
         return 0 if report["ok"] else 1
+    try:
+        cert_warn_days = parse_cert_warn_days(a.cert_warn_days)
+    except ValueError as e:
+        p.error(str(e))
     app, ctx, mode = build_central(
         a.cert,
         a.key,
@@ -495,7 +557,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         env=env,
         stale_after_s=a.stale_after_s,
         deny_list=a.deny_list,
-        cert_warn_days=a.cert_warn_days,
+        cert_warn_days=cert_warn_days,
     )
     srv = make_central_server(app, a.host, a.port, ctx)
     print(f"quietroom-central listening on https://{a.host}:{srv.server_port} ({mode})", flush=True)

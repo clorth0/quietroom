@@ -22,6 +22,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from quietroom.alerts import check_flush_budget
+from quietroom.sqlitedb import Schema, open_db
+
 URN_UUID_PREFIX = "urn:uuid:"
 HEARTBEAT_PATH = "/api/v1/heartbeat"
 # Outbox bounds (defaults of the [fleet] outbox_* config keys).
@@ -32,6 +35,9 @@ OUTBOX_BUSY_TIMEOUT_S = 30.0
 # Rows delivered per flush (per tick): a long backlog drains over several ticks
 # instead of holding one tick past the systemd watchdog.
 FLUSH_BATCH = 500
+# Wall-clock budget per flush (see quietroom.alerts.ALERT_FLUSH_BUDGET_S): once
+# spent, no new upload starts and the rest stay queued for the next tick.
+FLUSH_BUDGET_S = 15.0
 _OUTBOX_COLUMNS = {
     "created_at": "REAL",
     "attempts": "INTEGER NOT NULL DEFAULT 0",
@@ -40,6 +46,14 @@ _OUTBOX_COLUMNS = {
     "parked_at": "REAL",
     "park_reason": "TEXT",
 }
+FLEET_OUTBOX_SCHEMA = Schema(
+    "fleet outbox",
+    statements=(
+        "CREATE TABLE IF NOT EXISTS fleet_outbox(id INTEGER PRIMARY KEY, path TEXT, payload TEXT)",
+        "CREATE TABLE IF NOT EXISTS fleet_outbox_meta(key TEXT PRIMARY KEY, value INTEGER)",
+    ),
+    columns={"fleet_outbox": _OUTBOX_COLUMNS},
+)
 DAY_S = 86400.0
 DEFAULT_CERT_WARN_DAYS = 30.0
 
@@ -270,6 +284,8 @@ class FleetClient:
         max_attempts: int = OUTBOX_MAX_ATTEMPTS,
         clock: Callable[[], float] = time.time,
         flush_batch: int = FLUSH_BATCH,
+        flush_budget_s: float = FLUSH_BUDGET_S,
+        monotonic: Callable[[], float] = time.monotonic,
     ):
         self.base = base_url.rstrip("/")
         if ssl_context is not None and not self.base.lower().startswith("https://"):
@@ -299,6 +315,10 @@ class FleetClient:
         self.max_attempts = max_attempts
         self.clock = clock
         self.flush_batch = flush_batch
+        self.flush_budget_s = check_flush_budget(flush_budget_s, "fleet outbox flush_budget_s")
+        self.monotonic = monotonic
+        # Did the most recent flush stop because its time budget ran out?
+        self.last_flush_budget_spent = False
         # Rows set aside since the consumer (the service) last read and cleared this.
         self.last_parked: list[dict[str, Any]] = []
         self.db = _outbox_db(outbox_path, self.clock())
@@ -408,15 +428,32 @@ class FleetClient:
     def outbox_status(self) -> dict[str, int]:
         return {"pending": self.pending(), "parked": self.parked(), "dropped": self.dropped()}
 
-    def flush(self) -> int:
+    def flush(
+        self,
+        *,
+        budget_s: float | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> int:
         """Deliver queued rows in order; returns how many went out.
 
         Stops at the first failing row (central down: one attempt per flush),
         except that suspects (>= max_attempts failures) are skipped so one bad
         payload cannot hold the queue. Suspects are retried after the others only
         while the previous attempt succeeded, and parked as poison if they fail
-        then. At most ``flush_batch`` rows go out per call.
+        then. At most ``flush_batch`` rows go out per call, and no upload starts
+        once ``budget_s`` (default ``flush_budget_s``) seconds have passed or
+        ``should_stop()`` is true; the rest stay queued, in order.
         """
+        budget = self.flush_budget_s if budget_s is None else float(budget_s)
+        deadline = self.monotonic() + budget
+        self.last_flush_budget_spent = False
+
+        def out_of_time() -> bool:
+            if self.monotonic() >= deadline:
+                self.last_flush_budget_spent = True
+                return True
+            return should_stop is not None and should_stop()
+
         now = self.clock()
         if self.max_age_s > 0:
             stale = self.db.execute(
@@ -441,12 +478,14 @@ class FleetClient:
             if self.max_attempts and row[3] >= self.max_attempts:
                 suspects.append(row)
                 continue
+            if out_of_time():
+                return sent
             tried = True
             last_ok = self._attempt(row, now)
             if not last_ok:
                 break
             sent += 1
-        if not tried and suspects:
+        if not tried and suspects and not out_of_time():
             # Everything left is a suspect: probe with the oldest so a recovered
             # central drains the queue (and a dead one still costs one attempt).
             last_ok = self._attempt(suspects.pop(0), now)
@@ -455,7 +494,7 @@ class FleetClient:
         # just before succeeded); failing then means the payload is the problem.
         # Central going down mid-flush therefore parks nothing.
         for row in suspects:
-            if not last_ok or sent >= self.flush_batch:
+            if not last_ok or sent >= self.flush_batch or out_of_time():
                 break
             if self._attempt(row, now):
                 sent += 1
@@ -485,42 +524,23 @@ class FleetClient:
         self.db.commit()
         return True
 
+    def close(self) -> None:
+        self.db.close()
+
     def _send_direct(self, path, payload):
         self.sender(f"{self.base}{path}", payload.encode(), self._headers())
 
 
 def _outbox_db(path: str | os.PathLike[str], now: float) -> sqlite3.Connection:
-    """Open (creating or upgrading in place) a fleet outbox file.
+    """Open (creating or upgrading in place) a fleet outbox file; see quietroom.sqlitedb."""
 
-    Safe beside a running node: schema work happens inside BEGIN IMMEDIATE
-    with a busy timeout, and a column added concurrently is not an error.
-    """
-    db = sqlite3.connect(str(path), timeout=OUTBOX_BUSY_TIMEOUT_S)
-    try:
-        db.execute(f"PRAGMA busy_timeout={int(OUTBOX_BUSY_TIMEOUT_S * 1000)}")
-        db.execute("BEGIN IMMEDIATE")
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS fleet_outbox("
-            "id INTEGER PRIMARY KEY, path TEXT, payload TEXT)"
-        )
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS fleet_outbox_meta(key TEXT PRIMARY KEY, value INTEGER)"
-        )
-        have = {r[1] for r in db.execute("PRAGMA table_info(fleet_outbox)")}
-        for col, decl in _OUTBOX_COLUMNS.items():
-            if col not in have:
-                try:
-                    db.execute(f"ALTER TABLE fleet_outbox ADD COLUMN {col} {decl}")
-                except sqlite3.OperationalError as e:
-                    if "duplicate column" not in str(e).lower():
-                        raise
+    def backfill(db: sqlite3.Connection) -> None:
         # Rows queued before the upgrade start their age clock now.
         db.execute("UPDATE fleet_outbox SET created_at=? WHERE created_at IS NULL", (now,))
-        db.commit()
-    except BaseException:
-        db.close()
-        raise
-    return db
+
+    return open_db(
+        path, FLEET_OUTBOX_SCHEMA, busy_timeout_s=OUTBOX_BUSY_TIMEOUT_S, upgrade=backfill
+    )
 
 
 def fleet_outbox_rows(path, *, parked=None):

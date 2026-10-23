@@ -36,6 +36,7 @@ def _outbox_bounds(fc: FleetConfig) -> dict:
         "max_rows": fc.outbox_max_rows,
         "max_age_s": fc.outbox_max_age_s,
         "max_attempts": fc.outbox_max_attempts,
+        "flush_budget_s": fc.flush_budget_s,
     }
 
 
@@ -192,6 +193,7 @@ def build_alerting(cfg, env):
             Outbox(
                 path, channel=name, backoff_s=30, max_backoff_s=3600,
                 max_attempts=cfg.alert_max_attempts, max_age_s=cfg.alert_max_age_s,
+                flush_budget_s=cfg.alert_flush_budget_s,
             ),
         )
         for name, send in sinks
@@ -475,8 +477,19 @@ def main(argv=None):
             print(json.dumps(e))
         print(json.dumps({"health": svc.health(), "tick": r.__dict__}, default=str))
         return 0
-    print(f"quietroom-node {cfg.node_id} starting ({len(cfg.segments)} segments)")
-    svc.run()
+    from quietroom.node.stopping import Stopper
+
+    print(f"quietroom-node {cfg.node_id} starting ({len(cfg.segments)} segments)", flush=True)
+    stopper = Stopper()
+    stopper.install()  # SIGTERM/SIGINT: finish the sweep in flight, flush, close, exit 0
+    try:
+        svc.run(stop_event=stopper)
+    finally:
+        stopper.restore()
+        stopper.close()
+    print(
+        f"quietroom-node: {stopper.signame} received; stopped cleanly", file=sys.stderr, flush=True
+    )
     return 0
 
 

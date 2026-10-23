@@ -137,7 +137,7 @@ def test_daemon_mode_does_not_buffer_every_event_forever(monkeypatch):
         def __init__(self, *a, **kw):
             seen.update(kw)
 
-        def run(self):
+        def run(self, stop_event=None):
             return 0
 
     monkeypatch.setattr(cli, "MonitorService", Fake)

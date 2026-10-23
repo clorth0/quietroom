@@ -1,4 +1,4 @@
-"""systemd sd_notify client (READY/WATCHDOG/STATUS) over $NOTIFY_SOCKET.
+"""systemd sd_notify client (READY/WATCHDOG/STOPPING/STATUS) over $NOTIFY_SOCKET.
 
 No systemd library dependency: the protocol is one datagram per message.
 Abstract sockets (leading @) are handled per sd_notify(3).
@@ -35,6 +35,9 @@ class SdNotifier:
 
     def watchdog(self):
         return self._send("WATCHDOG=1")
+
+    def stopping(self):
+        return self._send("STOPPING=1")
 
     def status(self, text):
         return self._send(f"STATUS={text}")

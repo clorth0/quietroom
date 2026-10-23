@@ -78,6 +78,10 @@ node UUID per line, and `#` starts a comment:
   when inode, size, mtime or ctime change. The next request from a listed UUID gets
   `403 node certificate revoked`, and its heartbeats and events are not stored.
   Central logs the first refusal for each UUID to stderr.
+- **Check it before relying on it.** `quietroom-central ... --deny-list FILE
+  --check-config` fails (exit 1) if the file is missing, a directory, not UTF-8,
+  unreadable, or holds a line that is not a UUID (it names the line). On success it
+  reports how many UUIDs are revoked.
 - **Edit atomically.** Write a temporary file in the same directory, then rename it
   over the list, so central never reads a half-written file:
   `cp deny.txt deny.txt.new && echo "$UUID" >> deny.txt.new && mv deny.txt.new deny.txt`.
@@ -112,7 +116,9 @@ node UUID per line, and `#` starts a comment:
   `client certificate expires in N days (...)`. The node re-evaluates this on every
   health call, so a long-running daemon starts warning without a restart. It also
   prints the warning to stderr at startup.
-- **Central.** `--cert-warn-days` (default 30). Central records `notAfter` from the
+- **Central.** `--cert-warn-days` (default 30; whole days from 0 to 365, 0 disables the
+  warning as on the node; checked by `--check-config` and at startup, where a bad
+  value exits 2). Central records `notAfter` from the
   **verified TLS client certificate** on each heartbeat, never from the body.
   `GET /api/v1/nodes` gives each node
   `cert: {not_after, expires_in_s, expiring, expired}`, which is `null` for
