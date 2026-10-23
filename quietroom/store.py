@@ -72,17 +72,75 @@ def _unblob(b):
     return d["freqs"], d["power"]
 
 
+# How long an open waits on another connection (the daemon, or a CLI command
+# racing it) before giving up. Applies to every statement on the connection.
+BUSY_TIMEOUT_S = 30.0
+
+
+def _is_lock_error(e: sqlite3.OperationalError) -> bool:
+    msg = str(e).lower()
+    return "locked" in msg or "busy" in msg
+
+
 class Store:
-    def __init__(self, path):
-        self.db = sqlite3.connect(str(path))
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
-        have = {r[1] for r in self.db.execute("PRAGMA table_info(baselines)")}
-        for col, decl in _BASELINE_COLUMNS.items():
-            if col not in have:
-                self.db.execute(f"ALTER TABLE baselines ADD COLUMN {col} {decl}")
-        self.db.commit()
+    """One node's SQLite database. Safe to open from several processes at once.
+
+    The daemon and ``quietroom-node --rebaseline/--ack/--promote-anchor`` share
+    this file, so opening it (switch to WAL, create tables, upgrade an older
+    schema) is serialized: the WAL switch is retried while another opener holds
+    the lock, and schema setup runs in one ``BEGIN IMMEDIATE`` transaction so
+    exactly one opener applies a column migration and the rest see it done.
+    """
+
+    def __init__(self, path, busy_timeout_s: float = BUSY_TIMEOUT_S):
+        self.db = sqlite3.connect(str(path), timeout=busy_timeout_s)
+        try:
+            self.db.row_factory = sqlite3.Row
+            self.db.execute(f"PRAGMA busy_timeout={int(busy_timeout_s * 1000)}")
+            self._enable_wal(busy_timeout_s)
+            self._ensure_schema()
+        except BaseException:
+            self.db.close()
+            raise
+
+    def _enable_wal(self, busy_timeout_s: float) -> None:
+        # Switching journal mode needs an exclusive lock and SQLite can report
+        # SQLITE_BUSY here without consulting the busy handler, so retry it.
+        deadline = time.monotonic() + busy_timeout_s
+        delay = 0.005
+        while True:
+            try:
+                self.db.execute("PRAGMA journal_mode=WAL").fetchone()
+                return
+            except sqlite3.OperationalError as e:
+                if not _is_lock_error(e) or time.monotonic() >= deadline:
+                    raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+
+    def _ensure_schema(self) -> None:
+        # executescript() would COMMIT first, so run the statements one by one
+        # inside a single write transaction taken up front.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for stmt in SCHEMA.split(";"):
+                if stmt.strip():
+                    self.db.execute(stmt)
+            have = {r[1] for r in self.db.execute("PRAGMA table_info(baselines)")}
+            for col, decl in _BASELINE_COLUMNS.items():
+                if col in have:
+                    continue
+                try:
+                    self.db.execute(f"ALTER TABLE baselines ADD COLUMN {col} {decl}")
+                except sqlite3.OperationalError as e:
+                    # Harmless: someone else added it (e.g. a process that
+                    # opened the file without this lock).
+                    if "duplicate column" not in str(e).lower():
+                        raise
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def close(self):
         self.db.close()

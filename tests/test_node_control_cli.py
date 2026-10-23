@@ -100,13 +100,16 @@ def test_control_commands_need_a_store(tmp_path):
 
 def _finish_soon(db, status, result):
     def run():
-        for _ in range(100):
-            s = Store(db)
-            pending = s.pending_controls("n1")
-            if pending:
-                s.finish_control(pending[0]["id"], status, result)
-                return
-            time.sleep(0.02)
+        s = Store(db)  # one connection, like the daemon, closed when done
+        try:
+            for _ in range(100):
+                pending = s.pending_controls("n1")
+                if pending:
+                    s.finish_control(pending[0]["id"], status, result)
+                    return
+                time.sleep(0.02)
+        finally:
+            s.close()
 
     t = threading.Thread(target=run)
     t.start()
