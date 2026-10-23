@@ -58,6 +58,21 @@ min_score = 80
 cooldown_s = 3600
 webhook_url = ""          # set to enable webhook alerts (secret via QUIETROOM_WEBHOOK_SECRET)
 
+# Email alerts. Remove/comment this table to disable. The SMTP password comes
+# only from QUIETROOM_SMTP_PASSWORD (e.g. /etc/quietroom/secrets.env); a
+# `password` key here is rejected. Undelivered alerts queue in
+# <store path>.alerts-outbox and retry with backoff (30 s doubling to 1 h).
+# [alerts.email]
+# host = "smtp.example.com"
+# port = 587               # 465 with ssl = true
+# starttls = true          # required, not opportunistic; cert verified
+# ssl = false              # implicit TLS (SMTPS) instead of STARTTLS
+# from = "quietroom@example.com"
+# to = ["secops@example.com"]
+# username = "quietroom"   # AUTH only over TLS; omit for an open local relay
+# ca_file = ""             # private relay CA (PEM); default system trust store
+# timeout_s = 10
+
 [fleet]
 base_url = ""             # set to enable central upload (token via QUIETROOM_CENTRAL_TOKEN)
 heartbeat_s = 60

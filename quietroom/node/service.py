@@ -59,6 +59,7 @@ class MonitorService:
         self.fleet_interval_s = fleet_interval_s
         self.notifier = notifier
         self._last_heartbeat = 0.0
+        self.delivery_errors: dict[str, str] = {}
         self.scheduler = BandScheduler(config.segments)
         self.baselines: dict[str, Baseline] = {}
         self.trackers: dict[str, PersistenceTracker] = {}
@@ -306,7 +307,25 @@ class MonitorService:
             except Exception as e:  # keep other segments running; surface in health
                 self.last_error = f"{seg.name}: {e}"
                 result.errors.append(self.last_error)
+        self.flush_alerts()
         return result
+
+    def flush_alerts(self):
+        """Deliver queued alerts (every tick, so retries happen with no new alert).
+
+        Delivery problems are recorded per channel and never become sweep
+        errors: a down SMTP relay must not look like a radio fault.
+        """
+        for ch in self.notifiers:
+            flush = getattr(ch, "flush", None)
+            if flush is None:
+                continue
+            name = getattr(ch, "name", repr(ch))
+            try:
+                flush()
+                self.delivery_errors.pop(name, None)
+            except Exception as e:  # outbox itself failed (disk, sqlite)
+                self.delivery_errors[name] = f"{type(e).__name__}: {e}"
 
     def health(self):
         return {
@@ -320,6 +339,10 @@ class MonitorService:
                 for name, m in self.baseline_meta.items()
             },
             "rebaseline_deferred": dict(self.rebaseline_deferred),
+            "alert_outbox": {
+                ch.name: ch.pending() for ch in self.notifiers if hasattr(ch, "pending")
+            },
+            "alert_delivery_errors": dict(self.delivery_errors),
             "device": getattr(self, "device_info", None).__dict__
             if getattr(self, "device_info", None)
             else None,

@@ -74,6 +74,78 @@ def _rebaseline_policy(b, alert_min_score):
         incident_hold_s=float(b.get("incident_hold_s", 3600.0)),
         invalidate_on_fingerprint=bool(b.get("invalidate_on_fingerprint", True)),
     )
+_ADDR_RE = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+$")
+_EMAIL_KEYS = {
+    "host", "port", "starttls", "ssl", "from", "to", "username", "ca_file", "timeout_s",
+}
+
+
+def _address(v, what):
+    v = str(v)
+    if not _ADDR_RE.match(v):
+        raise ValueError(f"[alerts.email] {what}: invalid address {v!r}")
+    return v
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+    """[alerts.email]: SMTP delivery. The password is never in TOML; it comes
+    from the QUIETROOM_SMTP_PASSWORD environment variable at startup."""
+
+    host: str
+    from_addr: str
+    to_addrs: tuple[str, ...]
+    port: int = 587
+    starttls: bool = True
+    ssl: bool = False  # implicit TLS (SMTPS, usually port 465)
+    username: str = ""
+    ca_file: str = ""  # private relay CA; default = system trust store
+    timeout_s: float = 10.0
+
+    @classmethod
+    def from_dict(cls, d):
+        if "password" in d:
+            raise ValueError(
+                "[alerts.email] password must not be in the config file; "
+                "set QUIETROOM_SMTP_PASSWORD in the service environment"
+            )
+        unknown = set(d) - _EMAIL_KEYS
+        if unknown:
+            raise ValueError(f"unknown [alerts.email] keys: {', '.join(sorted(unknown))}")
+        if not d.get("host"):
+            raise ValueError("[alerts.email] needs a host")
+        if not d.get("from"):
+            raise ValueError("[alerts.email] needs a from address")
+        to = d.get("to")
+        to_list = [to] if isinstance(to, str) else list(to or [])
+        if not to_list:
+            raise ValueError("[alerts.email] needs at least one to address")
+        ssl_on = bool(d.get("ssl", False))
+        starttls = bool(d.get("starttls", not ssl_on))
+        if ssl_on and starttls:
+            raise ValueError("[alerts.email] set ssl or starttls, not both")
+        port = int(d.get("port", 465 if ssl_on else 587))
+        if not 0 < port < 65536:
+            raise ValueError(f"[alerts.email] port {port} out of range")
+        username = str(d.get("username", ""))
+        if username and not (ssl_on or starttls):
+            raise ValueError(
+                "[alerts.email] username set without starttls/ssl: refusing plaintext AUTH"
+            )
+        timeout = float(d.get("timeout_s", 10.0))
+        if timeout <= 0:
+            raise ValueError("[alerts.email] timeout_s must be > 0")
+        return cls(
+            host=str(d["host"]),
+            from_addr=_address(d["from"], "from"),
+            to_addrs=tuple(_address(a, "to") for a in to_list),
+            port=port,
+            starttls=starttls,
+            ssl=ssl_on,
+            username=username,
+            ca_file=str(d.get("ca_file", "")),
+            timeout_s=timeout,
+        )
 
 
 @dataclass(frozen=True)
@@ -97,6 +169,7 @@ class NodeConfig:
     # the antenna (and saying so here) invalidates the stored baseline.
     antenna: str = ""
     rebaseline: RebaselinePolicy = field(default_factory=RebaselinePolicy)
+    email: EmailConfig | None = None
 
     @classmethod
     def from_dict(cls, d):
@@ -139,6 +212,7 @@ class NodeConfig:
             float(fleet.get("heartbeat_s", 60.0)),
             antenna=str(n.get("antenna", "")),
             rebaseline=rebaseline,
+            email=EmailConfig.from_dict(alerts["email"]) if "email" in alerts else None,
         )
 
     def to_dict(self):

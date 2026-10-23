@@ -22,6 +22,9 @@ ConfigurationDirectory=quietroom
 MemoryMax=512M
 CPUQuota=200%
 Environment=PYTHONDONTWRITEBYTECODE=1
+# Secrets (QUIETROOM_SMTP_PASSWORD, QUIETROOM_WEBHOOK_SECRET, ...) live here,
+# never in config.toml. root:quietroom 0640. Optional ("-"): absent = no secrets.
+EnvironmentFile=-/etc/quietroom/secrets.env
 
 [Install]
 WantedBy=multi-user.target

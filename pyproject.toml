@@ -18,7 +18,12 @@ audio = ["sounddevice>=0.4"]
 dev = ["pytest>=8.0"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "cryptography>=42",
+]
 
 [project.scripts]
 quietroom = "quietroom.cli:main"
